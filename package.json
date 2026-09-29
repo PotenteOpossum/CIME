@@ -1,0 +1,19 @@
+{
+  "name": "cime",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "description": "Collective Intelligence Made Easy",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "install:all": "npm ci --prefix backend && npm ci --prefix frontend && npm ci --prefix admin-frontend",
+    "setup:admin": "npm --prefix backend run setup:admin",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:admin": "npm --prefix admin-frontend run dev",
+    "start:backend": "npm --prefix backend start",
+    "build": "npm --prefix frontend run build && npm --prefix admin-frontend run build"
+  }
+}

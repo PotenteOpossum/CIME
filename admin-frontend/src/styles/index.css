@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply min-h-screen bg-slate-50 font-sans text-slate-900 antialiased transition-colors duration-300 dark:bg-slate-950 dark:text-slate-100;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-slate-900/70 backdrop-blur-md border border-white/10 shadow-xl;
+  }
+}
+
+/* The admin interface predates theme variants and uses dark slate utilities directly.
+   These scoped mappings preserve that design in dark mode and provide a coherent light mode. */
+html:not(.dark) .admin-theme [class*="bg-slate-950"] {
+  background-color: rgb(248 250 252 / var(--tw-bg-opacity, 1)) !important;
+}
+
+html:not(.dark) .admin-theme [class*="bg-slate-900"] {
+  background-color: rgb(255 255 255 / var(--tw-bg-opacity, 1)) !important;
+}
+
+html:not(.dark) .admin-theme [class*="bg-slate-850"],
+html:not(.dark) .admin-theme [class*="bg-slate-800"] {
+  background-color: rgb(241 245 249 / var(--tw-bg-opacity, 1)) !important;
+}
+
+html:not(.dark) .admin-theme [class*="text-slate-100"],
+html:not(.dark) .admin-theme [class*="text-slate-200"],
+html:not(.dark) .admin-theme [class*="text-slate-300"],
+html:not(.dark) .admin-theme .text-white {
+  color: #0f172a !important;
+}
+
+html:not(.dark) .admin-theme [class*="text-slate-400"] {
+  color: #475569 !important;
+}
+
+html:not(.dark) .admin-theme [class*="text-slate-500"],
+html:not(.dark) .admin-theme [class*="text-slate-600"] {
+  color: #64748b !important;
+}
+
+html:not(.dark) .admin-theme [class*="border-white/"],
+html:not(.dark) .admin-theme [class*="border-slate-7"],
+html:not(.dark) .admin-theme [class*="border-slate-8"],
+html:not(.dark) .admin-theme [class*="border-slate-9"],
+html:not(.dark) .admin-theme [class*="divide-slate-8"] {
+  border-color: #dbe3ee !important;
+}
+
+html:not(.dark) .admin-theme button[class*="bg-indigo"] .text-white,
+html:not(.dark) .admin-theme button[class*="bg-emerald"] .text-white,
+html:not(.dark) .admin-theme button[class*="bg-red"] .text-white,
+html:not(.dark) .admin-theme button.text-white,
+html:not(.dark) .admin-theme [class*="bg-gradient"].text-white {
+  color: #fff !important;
+}
+
+html:not(.dark) .admin-theme .glass-panel {
+  background-color: rgb(255 255 255 / 0.88) !important;
+  border-color: #dbe3ee !important;
+  box-shadow: 0 18px 45px rgb(15 23 42 / 0.08);
+}
+
+html:not(.dark) .admin-theme input,
+html:not(.dark) .admin-theme textarea,
+html:not(.dark) .admin-theme select {
+  color: #0f172a;
+}
+
+html:not(.dark) .admin-theme-toggle {
+  background-color: #fff !important;
+  color: #334155 !important;
+}

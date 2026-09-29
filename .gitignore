@@ -1,0 +1,42 @@
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+.npmrc
+
+# Installed dependencies and builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+
+# Runtime state and participant data
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+backend/logs/
+backend/agent-config/settings.json
+backend/agent-config/default-settings.json
+backend/prompts/*.md
+!backend/prompts/default.md
+exports/
+backups/
+
+# Local files
+.DS_Store
+*.patch
+*.bak
+.vscode/
+.idea/
