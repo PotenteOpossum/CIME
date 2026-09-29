@@ -1,5 +1,9 @@
 # CIME — Collective Intelligence Made Easy
 
+<p align="center">
+  <img src="frontend/src/img/CIME_LOGO.png" alt="CIME logo" width="280">
+</p>
+
 CIME is a web application for structured collective decision-making. It connects private interviews, small-group discussion, voting, and collective review, with AI-assisted facilitation and explicit backend rules for process control.
 
 For a detailed explanation of the implementation, administrator controls, simulation and quality methods, and experiment setup, see the [CIME implementation and research guide](CIME_GUIDE.md).
