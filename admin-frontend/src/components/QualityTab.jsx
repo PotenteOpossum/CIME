@@ -1,3 +1,4 @@
+import { buildQualitySankeyGraph } from '../utils/qualitySankey.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import createPlotlyComponent from 'react-plotly.js/factory';
 import Plotly from 'plotly.js-dist-min';
@@ -7,6 +8,8 @@ import { createQualityPolling } from '../utils/qualityPolling.js';
 const Plot = createPlotlyComponent(Plotly);
 
 export default function QualityTab({ token }) {
+  const [computing, setComputing] = useState(null);
+  const [computeNotice, setComputeNotice] = useState(null);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -26,7 +29,7 @@ export default function QualityTab({ token }) {
   const [sankeyTopic, setSankeyTopic] = useState('');
   const [sankeyRoom, setSankeyRoom] = useState(''); // 'all' or room ID
   const [showDidNotVote, setShowDidNotVote] = useState(true);
-  const [showFinalDecision, setShowFinalDecision] = useState(true);
+  const [showFinalDecision, setShowFinalDecision] = useState(false);
   const [showPersonalPhase, setShowPersonalPhase] = useState(false);
 
   // Set defaults once when stats are first loaded
@@ -67,6 +70,18 @@ export default function QualityTab({ token }) {
 
   const pollingRef = useRef(null);
   const fetchStats = (force = false) => pollingRef.current?.refresh(force);
+  const computeMetric = async (name) => {
+    if (computing) return;
+    const count = stats?.analysisCounts?.[name] ?? (name === 'options' ? stats?.summary?.totalSuggestions : stats?.summary?.totalMessages);
+    if (count === 0) {
+      setComputeNotice(name === 'options' ? 'No participant-submitted voting options are available to analyze in this selection.' : 'No participant messages are available in group or convergence rooms for this selection. Bot messages and personal interviews are excluded from these discussion-quality metrics.');
+      return;
+    }
+    setComputeNotice(null);
+    setComputing(name);
+    try { await pollingRef.current?.refresh(true, name); }
+    finally { setComputing(null); }
+  };
 
   const downloadComputedRunData = async () => {
     setDownloading(true);
@@ -583,22 +598,33 @@ export default function QualityTab({ token }) {
     );
   };
 
-  const MetricCard = ({ title, value, detail, accentClass = 'border-slate-800 bg-slate-900/40', valueClass = 'text-slate-100', detailClass = 'text-slate-500', onInfo, spanClass = '', children }) => (
+  const MetricCard = ({ title, value, detail, accentClass = 'border-slate-800 bg-slate-900/40', valueClass = 'text-slate-100', detailClass = 'text-slate-500', onInfo, spanClass = '', children, analysis }) => (
     <div className={`rounded-xl border p-5 min-h-[132px] flex flex-col justify-between ${accentClass} ${spanClass}`}>
       <div className="flex items-start justify-between gap-3">
         <span className="text-xs font-semibold text-slate-400 block leading-tight break-words">{title}</span>
         {onInfo && <InfoButton onClick={onInfo} label={`More info about ${title}`} />}
       </div>
-      <div className="flex flex-col gap-2">
-        <span className={`text-2xl font-bold leading-none ${valueClass}`}>{value}</span>
-        <span className={`block text-xs font-medium leading-snug break-words whitespace-normal ${detailClass}`}>{detail}</span>
-      </div>
-      {children && <div className="mt-3">{children}</div>}
+      {analysis && (stats?.analysisCounts?.[analysis] ?? (analysis === 'options' ? summary.totalSuggestions : summary.totalMessages)) === 0 ? (
+        <div className="mt-4 min-h-[80px] flex flex-col gap-2"><span className="text-lg font-semibold text-slate-900">No eligible data</span><span className="text-sm text-slate-500">{analysis === 'options' ? 'No participant-submitted voting options in this selection.' : 'No participant messages in group or convergence rooms. Personal interviews and bot messages are excluded.'}</span></div>
+      ) : analysis && !stats?.analysisStatus?.[analysis] ? (
+        <div className="mt-4 min-h-[80px] text-sm text-slate-500">Not computed for this selection. Requires AI analysis.</div>
+      ) : <>
+        <div className="flex flex-col gap-2">
+          <span className={`text-2xl font-bold leading-none ${valueClass}`}>{value}</span>
+          <span className={`block text-xs font-medium leading-snug break-words whitespace-normal ${detailClass}`}>{detail}</span>
+        </div>
+        {children && <div className="mt-3">{children}</div>}
+      </>}
+      {analysis && <div className="mt-4 flex flex-col items-start gap-1">
+        <button disabled={!!computing || loading} onClick={() => computeMetric(analysis)} className="quality-action quality-action-primary">{computing === analysis ? "Computing…" : `Compute ${title}`}</button>
+        {stats?.analysisStatus?.[analysis] && <span className="text-xs text-slate-500">Saved results are reused.</span>}
+      </div>}
     </div>
   );
 
   // Custom SVG Area Chart Component (for Time-Series)
   const RenderSvgChart = ({ id, title, description, yKey, colorClass, strokeColor, fillColor, gradientId, maxValueOverride, isRatio, onInfo }) => {
+    if (yKey === 'deliberativeQuality' && !stats?.analysisStatus?.deliberative) return <MetricCard title={title} analysis="deliberative" onInfo={onInfo} />;
     if (timeSeries.length === 0) {
       return (
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 backdrop-blur-md">
@@ -624,12 +650,12 @@ export default function QualityTab({ token }) {
     const graphWidth = svgWidth - paddingLeft - paddingRight;
     const graphHeight = svgHeight - paddingTop - paddingBottom;
 
-    const values = timeSeries.map(d => d[yKey] || 0);
+    const values = timeSeries.map(d => isRatio ? Math.min(1, Math.max(0, Number(d[yKey]) || 0)) : Number(d[yKey]) || 0);
     const maxVal = maxValueOverride !== undefined ? maxValueOverride : Math.max(...values, 0.1);
 
     // Compute coordinate points
     const points = timeSeries.map((d, index) => {
-      const val = d[yKey] || 0;
+      const val = values[index];
       const x = paddingLeft + (timeSeries.length > 1 ? (index / (timeSeries.length - 1)) * graphWidth : graphWidth / 2);
       const y = svgHeight - paddingBottom - (val / maxVal) * graphHeight;
       return { x, y, val, label: d.label };
@@ -669,7 +695,7 @@ export default function QualityTab({ token }) {
         <div className="relative">
           <svg
             viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-            className="w-full h-auto overflow-visible"
+            className="w-full h-auto overflow-hidden"
             onMouseLeave={() => setHoveredChart(null)}
           >
             <defs>
@@ -769,6 +795,7 @@ export default function QualityTab({ token }) {
 
   // Custom SVG Bar Chart Component (for Topic/Room Comparisons)
   const RenderCompareChart = ({ id, title, description, yKey, colorClass, strokeColor, fillColor, isRatio, data, categoryKey, onInfo }) => {
+    if (yKey === 'deliberativeQuality' && !stats?.analysisStatus?.deliberative) return <MetricCard title={title} analysis="deliberative" onInfo={onInfo} />;
     if (!data || data.length === 0) {
       return (
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 backdrop-blur-md">
@@ -848,7 +875,7 @@ export default function QualityTab({ token }) {
         <div className="relative">
           <svg
             viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-            className="w-full h-auto overflow-visible"
+            className="w-full h-auto overflow-hidden"
             onMouseLeave={() => setHoveredChart(null)}
           >
             {/* Grid Lines */}
@@ -876,7 +903,7 @@ export default function QualityTab({ token }) {
 
             {/* Bars */}
             {data.map((d, index) => {
-              const val = d[yKey] || 0;
+              const val = values[index];
               const barHeight = (val / maxVal) * graphHeight;
               const x = paddingLeft + index * slotWidth + (slotWidth - barWidth) / 2;
               const y = svgHeight - paddingBottom - barHeight;
@@ -1681,211 +1708,7 @@ export default function QualityTab({ token }) {
 	      return sankeyData[sankeyTopic][sankeyRoom] ? [sankeyData[sankeyTopic][sankeyRoom]] : [];
 	    }, [sankeyData, sankeyRoom, sankeyTopic]);
 
-	    const normalizeOptionText = (text) => {
-	      const clean = String(text || '').replace(/\s+/g, ' ').trim();
-	      if (!clean) return 'Did Not Vote';
-	      const lower = clean.toLowerCase();
-	      if (lower === 'yes' || lower === 'yes.') return 'Yes';
-	      if (lower === 'no' || lower === 'no.') return 'No';
-	      if (lower === 'abstain' || lower === 'abstained') return 'Abstained';
-	      if (lower === 'did not vote' || lower === 'didn’t vote' || lower === 'didnt vote') return 'Did Not Vote';
-	      return clean;
-	    };
-
-	    const optionKey = (text) => normalizeOptionText(text).toLowerCase();
-
-	    const getOptionColor = (text) => {
-	      const clean = String(text || '').toLowerCase();
-	      if (clean === 'did not vote') return '#64748b';
-	      if (clean === 'keep discussing') return '#94a3b8';
-	      if (clean === 'yes') return '#10b981';
-	      if (clean === 'no') return '#f43f5e';
-	      if (clean === 'abstained' || clean === 'abstain') return '#64748b';
-	      const colors = ['#06b6d4', '#10b981', '#f59e0b', '#6366f1', '#ec4899', '#14b8a6', '#f43f5e', '#3b82f6', '#84cc16', '#eab308'];
-	      let hash = 0;
-	      for (let i = 0; i < clean.length; i += 1) {
-	        hash = clean.charCodeAt(i) + ((hash << 5) - hash);
-	      }
-	      return colors[Math.abs(hash) % colors.length];
-	    };
-
-	    const toRgba = (hex, alpha) => {
-	      const normalized = String(hex || '').replace('#', '');
-	      if (normalized.length !== 6) return `rgba(148, 163, 184, ${alpha})`;
-	      const r = parseInt(normalized.slice(0, 2), 16);
-	      const g = parseInt(normalized.slice(2, 4), 16);
-	      const b = parseInt(normalized.slice(4, 6), 16);
-	      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-	    };
-
-	    const plotlyGraph = useMemo(() => {
-	      const stageMap = new Map();
-	      const userStageMap = new Map();
-
-	      const includePoll = (poll) => {
-	        if (!showPersonalPhase && poll?.isPersonalPhase) return false;
-	        if (!showFinalDecision && poll?.isFinalDecision) return false;
-	        return true;
-	      };
-
-	      const stageForPoll = (poll, visibleIndex) => {
-	        if (poll?.isPersonalPhase) return { key: 'personal', label: 'Personal', sort: 0 };
-	        if (poll?.isFinalDecision) return { key: 'final', label: 'Final', sort: 1_000_000 };
-	        if (poll?.isConvergencePhase || /convergence/i.test(String(poll?.question || ''))) {
-	          return { key: `convergence-${visibleIndex}`, label: `Convergence ${visibleIndex + 1}`, sort: visibleIndex + 1 };
-	        }
-	        return { key: `round-${visibleIndex}`, label: `Round ${visibleIndex + 1}`, sort: visibleIndex + 1 };
-	      };
-
-	      const rememberStage = (stage) => {
-	        const existing = stageMap.get(stage.key);
-	        if (!existing || stage.sort < existing.sort) stageMap.set(stage.key, stage);
-	      };
-
-	      const rememberUserStage = (userKey, item) => {
-	        if (!userStageMap.has(userKey)) {
-	          userStageMap.set(userKey, { username: item.username, stages: new Map() });
-	        }
-	        const userRecord = userStageMap.get(userKey);
-	        const existing = userRecord.stages.get(item.stageKey);
-	        if (!existing) {
-	          userRecord.stages.set(item.stageKey, item);
-	          return;
-	        }
-	        const existingIsMissing = existing.optionText === 'Did Not Vote';
-	        const nextIsPresent = item.optionText !== 'Did Not Vote';
-	        const existingTime = new Date(existing.createdAt || 0).getTime();
-	        const nextTime = new Date(item.createdAt || 0).getTime();
-	        if ((existingIsMissing && nextIsPresent) || nextTime >= existingTime) {
-	          userRecord.stages.set(item.stageKey, item);
-	        }
-	      };
-
-	      for (const room of selectedRooms) {
-	        const polls = Array.isArray(room?.polls) ? room.polls : [];
-	        const visiblePollEntries = polls
-	          .map((poll, index) => ({ poll, originalIndex: index }))
-	          .filter(({ poll }) => includePoll(poll));
-
-	        visiblePollEntries.forEach(({ poll }, visibleIndex) => {
-	          rememberStage(stageForPoll(poll, visibleIndex));
-	        });
-
-	        for (const [rawUserId, user] of Object.entries(room?.userVotes || {})) {
-	          const userKey = String(rawUserId || user?.username || 'unknown');
-	          for (const { poll, originalIndex } of visiblePollEntries) {
-	            const visibleIndex = visiblePollEntries.findIndex(entry => entry.originalIndex === originalIndex);
-	            const stage = stageForPoll(poll, visibleIndex);
-	            const optionText = normalizeOptionText(user?.votes?.[originalIndex]?.optionText);
-	            if (poll?.isPersonalPhase && optionText === 'Did Not Vote') continue;
-	            if (!showDidNotVote && optionText === 'Did Not Vote') continue;
-	            rememberUserStage(userKey, {
-	              stageKey: stage.key,
-	              optionText,
-	              optionKey: optionKey(optionText),
-	              username: user?.username || 'unknown user',
-	              createdAt: poll?.created_at || ''
-	            });
-	          }
-	        }
-	      }
-
-	      const stages = [...stageMap.values()].sort((a, b) => a.sort - b.sort || a.label.localeCompare(b.label));
-	      const stageIndex = new Map(stages.map((stage, index) => [stage.key, index]));
-	      const nodeMap = new Map();
-	      const linkMap = new Map();
-
-	      for (const userRecord of userStageMap.values()) {
-	        const sequence = [...userRecord.stages.values()]
-	          .filter(item => stageIndex.has(item.stageKey))
-	          .map(item => ({ ...item, step: stageIndex.get(item.stageKey) }))
-	          .sort((a, b) => a.step - b.step);
-
-	        for (const item of sequence) {
-	          const nodeId = `${item.step}::${item.optionKey}`;
-	          if (!nodeMap.has(nodeId)) {
-	            nodeMap.set(nodeId, {
-	              id: nodeId,
-	              label: item.optionText,
-	              step: item.step,
-	              voters: new Set()
-	            });
-	          }
-	          nodeMap.get(nodeId).voters.add(userRecord.username);
-	        }
-
-	        for (let index = 0; index < sequence.length - 1; index += 1) {
-	          const source = `${sequence[index].step}::${sequence[index].optionKey}`;
-	          const target = `${sequence[index + 1].step}::${sequence[index + 1].optionKey}`;
-	          const linkKey = `${source}=>${target}`;
-	          if (!linkMap.has(linkKey)) {
-	            linkMap.set(linkKey, {
-	              key: linkKey,
-	              source,
-	              target,
-	              value: 0,
-	              usernames: [],
-	              sourceLabel: sequence[index].optionText,
-	              targetLabel: sequence[index + 1].optionText
-	            });
-	          }
-	          const link = linkMap.get(linkKey);
-	          link.value += 1;
-	          link.usernames.push(userRecord.username);
-	        }
-	      }
-
-	      const nodes = [...nodeMap.values()]
-	        .sort((a, b) => a.step - b.step || b.voters.size - a.voters.size || a.label.localeCompare(b.label));
-	      const nodeIndex = new Map(nodes.map((node, index) => [node.id, index]));
-	      const nodesByStep = nodes.reduce((acc, node) => {
-	        if (!acc.has(node.step)) acc.set(node.step, []);
-	        acc.get(node.step).push(node);
-	        return acc;
-	      }, new Map());
-
-	      const maxStep = Math.max(0, stages.length - 1);
-	      const nodeX = [];
-	      const nodeY = [];
-	      for (const node of nodes) {
-	        const peers = nodesByStep.get(node.step) || [];
-	        const position = Math.max(0, peers.findIndex(peer => peer.id === node.id));
-	        nodeX.push(maxStep === 0 ? 0.5 : Math.min(0.98, Math.max(0.02, node.step / maxStep)));
-	        nodeY.push(peers.length <= 1 ? 0.5 : Math.min(0.95, Math.max(0.05, (position + 0.5) / peers.length)));
-	      }
-
-	      const links = [...linkMap.values()].filter(link => nodeIndex.has(link.source) && nodeIndex.has(link.target));
-	      const linkSources = links.map(link => nodeIndex.get(link.source));
-	      const linkTargets = links.map(link => nodeIndex.get(link.target));
-	      const linkValues = links.map(link => link.value);
-	      const linkColors = links.map(link => toRgba(getOptionColor(link.sourceLabel), 0.38));
-	      const linkHover = links.map(link => {
-	        const users = link.usernames.join(', ');
-	        return `<b>${link.sourceLabel} -> ${link.targetLabel}</b><br>${link.value} user${link.value === 1 ? '' : 's'}<br>${users}`;
-	      });
-
-	      const nodeLabels = nodes.map(node => node.label);
-	      const nodeColors = nodes.map(node => getOptionColor(node.label));
-	      const nodeHover = nodes.map(node => {
-	        const voters = [...node.voters].sort();
-	        return `<b>${node.label}</b><br>${voters.length} user${voters.length === 1 ? '' : 's'}<br>${voters.join(', ')}`;
-	      });
-
-	      return {
-	        empty: nodes.length === 0 || links.length === 0,
-	        stageLabels: stages.map(stage => stage.label),
-	        nodeLabels,
-	        nodeColors,
-	        nodeHover,
-	        nodeX,
-	        nodeY,
-	        linkSources,
-	        linkTargets,
-	        linkValues,
-	        linkColors,
-	        linkHover
-	      };
-	    }, [selectedRooms, showDidNotVote, showFinalDecision, showPersonalPhase]);
+    const plotlyGraph = useMemo(() => buildQualitySankeyGraph({ selectedRooms, showDidNotVote, showFinalDecision, showPersonalPhase }), [selectedRooms, showDidNotVote, showFinalDecision, showPersonalPhase]);
 
 	    const EmptyState = ({ text }) => (
 	      <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
@@ -1932,7 +1755,7 @@ export default function QualityTab({ token }) {
 	          {[
 	            ['Show Did Not Vote', showDidNotVote, setShowDidNotVote],
 	            ['Include Personal Rooms', showPersonalPhase, setShowPersonalPhase],
-	            ['Show Final Decision', showFinalDecision, setShowFinalDecision]
+	            ['Include final vote (different question)', showFinalDecision, setShowFinalDecision]
 	          ].map(([label, checked, setter]) => (
 	            <label key={label} className="flex cursor-pointer items-center gap-2 text-xs text-slate-400 hover:text-slate-200">
 	              <input
@@ -1983,9 +1806,9 @@ export default function QualityTab({ token }) {
 	                autosize: true,
 	                height: 640,
 	                dragmode: false,
-	                paper_bgcolor: 'rgba(2,6,23,1)',
-	                plot_bgcolor: 'rgba(2,6,23,1)',
-	                font: { color: '#e2e8f0', family: 'ui-sans-serif, system-ui, sans-serif', size: 12 },
+	                paper_bgcolor: '#ffffff',
+	                plot_bgcolor: '#ffffff',
+	                font: { color: '#222e2b', family: 'ui-sans-serif, system-ui, sans-serif', size: 12 },
 	                margin: { l: 18, r: 18, t: 56, b: 18 },
 	                hoverlabel: {
 	                  bgcolor: 'rgba(2,6,23,0.88)',
@@ -2034,13 +1857,14 @@ export default function QualityTab({ token }) {
 
 	  return (
 	    <div className="space-y-6">
+      <p className="text-sm text-slate-500">Structural metrics load automatically. AI metrics run only when you choose Compute; cached results are reused. Deliberative quality analyzes the full run history so display filters do not change its scoring context.</p>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-5">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-slate-100 font-sans">Quality Analytics</h2>
           <p className="text-sm text-slate-400 mt-1">Review statistical and scientific metrics. Datapoints are binned at 1-minute intervals for experiment monitoring.</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="quality-toolbar-actions">
           {stats && (
             <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium border ${stats.experimentActive ? 'bg-emerald-950/45 text-emerald-400 border-emerald-800/40 animate-pulse' : 'bg-slate-800/45 text-slate-400 border-slate-700/50'}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${stats.experimentActive ? 'bg-emerald-500' : 'bg-slate-500'}`} />
@@ -2049,18 +1873,19 @@ export default function QualityTab({ token }) {
           )}
           <button
             onClick={() => fetchStats(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-500 transition-colors"
+            disabled={loading || !!computing}
+            className="quality-action quality-action-primary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="h-4 w-4">
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
             </svg>
-            Refresh Data
+            {loading ? "Refreshing…" : "Refresh data"}
           </button>
           <button
             onClick={downloadComputedRunData}
             disabled={downloading}
             title="Download the current run data already stored by CIME. No new quality analysis is started."
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 shadow hover:border-cyan-500 hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60 transition-colors"
+            className="quality-action quality-action-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="h-4 w-4">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
@@ -2070,6 +1895,8 @@ export default function QualityTab({ token }) {
         </div>
       </div>
 
+      {computeNotice && <p role="status" className="rounded-lg border border-slate-300 bg-slate-50 p-4 text-sm text-slate-700">{computeNotice}</p>}
+      {error && <p role="alert" className="text-red-600">{error}</p>}
       {downloadError && (
         <div className="rounded-lg border border-red-800/70 bg-red-950/30 px-3 py-2 text-xs text-red-300" role="alert">
           Could not download computed run data: {downloadError}
@@ -2154,6 +1981,7 @@ export default function QualityTab({ token }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4 gap-4">
         <MetricCard
           title={metricInfo.deliberativeQuality.title}
+          analysis="deliberative"
           value={toPercent(deliberativeQuality.score || 0)}
           detail={`${deliberativeQuality.messageCount || 0} analyzed messages`}
           accentClass="border-teal-800/50 bg-teal-900/25"
@@ -2258,6 +2086,7 @@ export default function QualityTab({ token }) {
       <div className="mt-4">
         <MetricCard
           title={metricInfo.newOptionsSuggested.title}
+          analysis="options"
           value={summary.totalSuggestions}
           detail={`(${summary.uniqueSuggestionsCount} unique)`}
           onInfo={() => openInfoModal(metricInfo.newOptionsSuggested.title, metricInfo.newOptionsSuggested.description, metricInfo.newOptionsSuggested.notes)}
@@ -2281,6 +2110,7 @@ export default function QualityTab({ token }) {
       <div className="mt-4">
         <MetricCard
           title={metricInfo.proactiveness.title}
+          analysis="proactiveness"
           value={toPercent((summary.proactiveness || summary.constructiveProposal || {}).rate || 0)}
           detail={`(${toPercent((summary.proactiveness || summary.constructiveProposal || {}).propositiveUsersRate || 0)} of users > 0.5)`}
           accentClass="border-emerald-800/50 bg-emerald-900/20"

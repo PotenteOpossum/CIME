@@ -1,4 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+import { participantRunId, API_ORIGIN } from '../platform/client.js';
+const API_BASE_URL = participantRunId ? `${API_ORIGIN}/api/platform/runs/${participantRunId}/engine` : (import.meta.env.VITE_API_BASE_URL || '/api');
 
 export async function apiRequest(path, options = {}, token) {
   const headers = {

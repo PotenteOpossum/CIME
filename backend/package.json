@@ -5,22 +5,30 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
-    "setup:admin": "node src/setupAdmin.js"
+    "dev": "node --watch src/platform/server.js",
+    "start": "node src/platform/server.js",
+    "setup:admin": "node src/setupAdmin.js",
+    "start:legacy": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "import:legacy": "node src/platform/importLegacy.js"
   },
   "dependencies": {
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "better-sqlite3": "^11.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "jose": "^6.2.12",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^10.0.15",
     "openai": "^4.86.1",
-    "socket.io": "^4.8.1"
+    "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "@electric-sql/pglite": "^0.5.8"
   },
   "engines": {
     "node": ">=22 <23"

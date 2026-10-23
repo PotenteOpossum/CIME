@@ -1,5 +1,7 @@
 # CIME: implementation, administration, and research guide
 
+> Account creation, multi-admin hosting, invitations and database setup now follow [README.md](README.md) and [PLATFORM.md](PLATFORM.md). The decision-engine rules and controls described below still apply.
+
 This guide describes **Collective Intelligence Made Easy (CIME)** as implemented in this repository. It is intended for administrators running deliberations, developers extending the application, and researchers designing experiments with its simulated participants. The [README](README.md) provides a shorter installation reference; this document explains the behavior behind the controls.
 
 The descriptions below follow the public application's source code. References explain the intellectual background of particular methods; they do not imply that CIME reproduces another system or that its behavioral assumptions have been empirically validated. Defaults and limits refer to this version of the code and can change in later versions.
@@ -240,7 +242,7 @@ The JSON editor validates supported fields through [adminJsonConfig.js](admin-fr
 | `group_proactivity` | 4; UI/JSON 1–5 | Minutes of silence before a group nudge. Lower means earlier intervention. The runtime timing helper clamps to 1–5 even though the low-level scale reader accepts up to 6. Poll announcements do not count as substantive conversation for the silence timer. |
 | `consensus_sensitivity` | 4; 1–10 | Minimum distinct-participant contribution fraction before the conversational readiness check: 10% per level, rounded up. Separate from vote approval. |
 | `check_response_validity` | false; boolean | Enables the validity checks used by collection and relevant custom-text handling. Changes how irrelevant answers are retried or ignored. |
-| `room_timer_minutes` | 3; 1–30 | Duration used by room-phase countdowns and timer-driven progression. It is not the duration of every ballot. |
+| `room_timer_minutes` | 3; 1–30 | Duration used by room-phase countdowns. A group countdown never discards topics: remaining ballots finish before the final question and convergence. It is not the duration of every ballot. |
 | `poll_approval_threshold` | 1; 1–3 | Encodes 51%, 75%, or 100% approval. Use the encoded level, not the percentage, in settings JSON. |
 | `minimum_votes_for_approval` | 50; 1–100 | Live-vote quorum as a percentage of eligible participants. |
 | `minimum_live_voting_duration_minutes` | 1; 0–30 | Prevents early live closure before this elapsed time. |

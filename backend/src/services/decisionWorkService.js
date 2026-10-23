@@ -5,7 +5,11 @@ import { runWithWorkContext } from './workContext.js';
 let generation = 0;
 let groupingSeed = null;
 export function getDecisionWorkVersion() { return generation; }
-export function getGroupingSeed() { return groupingSeed; }
+export function getGroupingSeed() {
+  if (groupingSeed !== null || process.env.CIME_ENGINE !== 'true') return groupingSeed;
+  const saved = db.prepare('SELECT config_json FROM run_simulation WHERE id = 1').get();
+  return saved ? JSON.parse(saved.config_json).seed ?? null : null;
+}
 
 export function invalidateDecisionWork() {
   generation++;

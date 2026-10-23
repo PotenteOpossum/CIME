@@ -9,7 +9,9 @@ import {
   isConvergenceReviewLocked,
   recordConvergenceReopen,
   recordConvergenceAgreement,
-  recordContinuousVoteAudit
+  recordContinuousVoteAudit,
+  ensureLiveOption,
+  announceContinuousVoteChange
 } from './agent3Service.js';
 import { resolvePersonaProfile, personaPromptBlock, computeVoteDecision } from './simulationAgentModel.js';
 
@@ -77,7 +79,7 @@ async function callLlmCompletions(args) {
       }]
     };
   }
-  return queueLlmCall(() => client.chat.completions.create(args));
+  return queueLlmCall(() => client.chat.completions.create({ ...args, metadata: { caller: 'simulation_agent', ...args.metadata } }));
 }
 
 function nowIso() {
@@ -223,7 +225,7 @@ async function simulateConvergenceReview(io, room, members) {
 
 export function normalizeSimulationVoteData(pollType, options, voteData = {}) {
   const input = voteData && typeof voteData === 'object' ? voteData : {};
-  const validOptions = Array.isArray(options) ? options : [];
+  const validOptions = Array.isArray(options) ? options.filter((option) => pollType !== 'swipe' || !['other', 'keep discussing'].includes(String(option.option_text).trim().toLowerCase())) : [];
   const validIds = new Set(validOptions.map((option) => Number(option.id)).filter(Number.isInteger));
   const fallbackId = validOptions.length > 0 ? Number(validOptions[0].id) : null;
   const customOptionText = typeof input.customOptionText === 'string'
@@ -249,7 +251,7 @@ export function normalizeSimulationVoteData(pollType, options, voteData = {}) {
         input.optionId ?? input.optionIds ?? input.rankedOptions,
         validIds
       ));
-      if (approvedIds.size === 0 && fallbackId !== null) approvedIds.add(fallbackId);
+      if (approvedIds.size === 0 && fallbackId !== null && !customOptionText) approvedIds.add(fallbackId);
       for (const option of validOptions) {
         const optionId = Number(option.id);
         byOption.set(optionId, approvedIds.has(optionId) ? 'right' : 'left');
@@ -283,7 +285,8 @@ export function normalizeSimulationVoteData(pollType, options, voteData = {}) {
   }
 
   const selectedIds = normalizeOptionIds(input.optionIds ?? input.optionId ?? input.rankedOptions, validIds);
-  const optionIds = selectedIds.length > 0 ? selectedIds : (fallbackId !== null ? [fallbackId] : []);
+  const selected = pollType === 'continuous' ? selectedIds.slice(0, 1) : selectedIds;
+  const optionIds = selected.length > 0 ? selected : (fallbackId !== null ? [fallbackId] : []);
   return {
     optionId: optionIds[0] || null,
     optionIds,
@@ -341,7 +344,7 @@ async function simulateAgentMessage(io, roomId, userId, text) {
   }
 }
 
-async function simulateAgentVote(io, pollId, userId, voteData) {
+export async function simulateAgentVote(io, pollId, userId, voteData) {
   throwIfWorkCancelled();
   const poll = db.prepare('SELECT id, room_id, question, is_closed, expires_at, poll_type, poll_stage FROM polls WHERE id = ?').get(pollId);
   if (!poll) return;
@@ -351,6 +354,12 @@ async function simulateAgentVote(io, pollId, userId, voteData) {
   if (!pollOptions.length) return;
 
   if (poll.poll_type === 'swipe') {
+    db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').run(pollId, userId);
+    if (normalizedVote.customOptionText) {
+      let other = pollOptions.find((option) => option.option_text.trim().toLowerCase() === 'other');
+      if (!other) other = { id: Number(db.prepare("INSERT INTO poll_options(poll_id, option_text) VALUES (?, 'Other')").run(pollId).lastInsertRowid) };
+      db.prepare('INSERT INTO poll_votes(poll_id, option_id, user_id, created_at, rank, custom_option_text) VALUES (?, ?, ?, ?, 1, ?)').run(pollId, other.id, userId, nowIso(), normalizedVote.customOptionText);
+    }
     db.prepare('DELETE FROM swipe_votes WHERE poll_id = ? AND user_id = ?').run(pollId, userId);
 
     const insertSwipe = db.prepare(
@@ -371,6 +380,23 @@ async function simulateAgentVote(io, pollId, userId, voteData) {
 
   const isContinuous = poll.poll_type === 'continuous' || poll.poll_stage === 'continuous';
 
+  if (isContinuous) {
+    let selectedId = normalizedVote.optionId;
+    const selected = pollOptions.find((option) => option.id === selectedId);
+    const writeIn = selected?.option_text.trim().toLowerCase() === 'other' ? normalizedVote.customOptionText : null;
+    if (selected?.option_text.trim().toLowerCase() === 'other' && !writeIn) return;
+    db.transaction(() => {
+      if (writeIn) selectedId = ensureLiveOption(pollId, writeIn);
+      db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').run(pollId, userId);
+      db.prepare('INSERT INTO poll_votes(poll_id, option_id, user_id, created_at, rank, custom_option_text) VALUES (?, ?, ?, ?, 1, ?)').run(pollId, selectedId, userId, nowIso(), writeIn);
+      recordContinuousVoteAudit({ pollId, userId, optionId: selectedId, customOptionText: writeIn, source: 'simulation_continuous_vote' });
+    })();
+    announceContinuousVoteChange({ pollId, roomId: poll.room_id, optionId: selectedId, customOptionText: writeIn });
+    rememberAgentEvent(userId, `Voted on "${poll.question}" with: ${writeIn || selected?.option_text}.`);
+    if (io) io.to(`room:${poll.room_id}`).emit('polls_updated', { roomId: poll.room_id });
+    await maybeResolvePollEarlyForVote(pollId, poll.room_id);
+    return;
+  }
   db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').run(pollId, userId);
 
   const { optionId, optionIds, rankedOptions, customOptionText } = normalizedVote;
@@ -406,25 +432,6 @@ async function simulateAgentVote(io, pollId, userId, voteData) {
         VALUES (?, ?, ?, ?, 1, ?)
       `
       ).run(pollId, firstOption.id, userId, nowIso(), null);
-    }
-  }
-
-  if (isContinuous) {
-    const currentVote = db.prepare(`
-      SELECT option_id, custom_option_text
-      FROM poll_votes
-      WHERE poll_id = ? AND user_id = ?
-      ORDER BY rank ASC, option_id ASC
-      LIMIT 1
-    `).get(pollId, userId);
-    if (currentVote) {
-      recordContinuousVoteAudit({
-        pollId,
-        userId,
-        optionId: currentVote.option_id,
-        customOptionText: currentVote.custom_option_text || null,
-        source: 'simulation_continuous_vote'
-      });
     }
   }
 
@@ -476,8 +483,21 @@ async function simulateAgentVote(io, pollId, userId, voteData) {
 }
 
 export function getSimulationStatus() {
-  return simulationState;
+  const state = db.prepare('SELECT current_phase, decision_run_mode, decision_run_started_at FROM system_state WHERE id = 1').get();
+  const hasStarted = !!state?.decision_run_started_at || !['idle'].includes(state?.current_phase);
+  const canResume = !simulationState.isRunning && state?.decision_run_mode === 'simulation' && ['gathering', 'discussing'].includes(state?.current_phase) && Object.keys(simulationState.personas).length > 0;
+  return { ...simulationState, phase: state?.current_phase, hasStarted, canResume };
 }
+
+export function resumeSimulation(io, config = {}) {
+  if (!getSimulationStatus().canResume) throw new Error('Only a paused simulation can be resumed. Create another run to repeat a finished simulation.');
+  if (config.stopAt && !['personal', 'discussing', 'convergence'].includes(config.stopAt)) throw new Error('Invalid simulation stop phase');
+  const savedIds = Object.keys(simulationState.personas).sort().join(',');
+  if (config.personas && Object.keys(config.personas).sort().join(',') !== savedIds) throw new Error('Resume with the same active agents. Create another run to change participants.');
+  if (config.seed !== undefined && Number(config.seed) !== simulationState.seed) throw new Error('Keep the original seed when resuming a simulation.');
+  startSimulation(io, { ...simulationState, ...config, personas: config.personas || simulationState.personas, memories: [...simulationMemories], skippedVotes: [...skippedVotes] });
+}
+
 
 export async function stopSimulation(interruptProcess = false) {
   simulationGeneration++;
@@ -490,6 +510,7 @@ export async function stopSimulation(interruptProcess = false) {
     simulationInterval = null;
   }
   simulationState.isRunning = false;
+  if (process.env.CIME_ENGINE === 'true') db.prepare('UPDATE run_simulation SET running = 0, config_json = ? WHERE id = 1').run(JSON.stringify({ ...simulationState, memories: [...simulationMemories], skippedVotes: [...skippedVotes] }));
   global.isSimulationRunning = false;
   global.simulatedPersonas = {};
   console.log('[SIMULATION] Stopped.');
@@ -528,21 +549,23 @@ export async function runSimulationStep(io) {
       const allQuestions = db.prepare("SELECT id, topic, question_text, is_general_question FROM gathering_questions ORDER BY question_order ASC, id ASC").all();
 
       if (simulationState.stopAt === 'personal') {
-        let shouldStop = false;
+        let shouldStop = true;
+        let simulatedRooms = 0;
         for (const room of rooms) {
           const username = room.name.replace('-personal', '');
           const user = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
           if (!user) continue;
           const agentConfig = simulationState.personas[user.id];
           if (!agentConfig) continue;
+          simulatedRooms++;
           const answered = db.prepare("SELECT question_id FROM gathering_answers WHERE user_id = ? AND response_status IN ('accepted', 'skipped_invalid')").all(user.id).map(r => r.question_id);
           const nextQ = allQuestions.find(q => !answered.includes(q.id));
-          if (nextQ && nextQ.is_general_question === 1) {
-            shouldStop = true;
+          if (nextQ && nextQ.is_general_question !== 1) {
+            shouldStop = false;
             break;
           }
         }
-        if (shouldStop) {
+        if (shouldStop && simulatedRooms > 0) {
           console.log('[SIMULATION] Stopping before voting on the final openness poll in personal rooms.');
           await stopSimulation(false);
           return;
@@ -725,10 +748,15 @@ export async function runSimulationStep(io) {
             }
             const cacheKey = `${poll.id}-${member.id}`;
             const options = db.prepare("SELECT id, option_text FROM poll_options WHERE poll_id = ? ORDER BY id ASC").all(poll.id);
+            const swipeOptions = options.filter((option) => !['other', 'keep discussing'].includes(option.option_text.trim().toLowerCase()));
             const hasVoted = poll.poll_type === 'swipe'
-              ? (options.length > 0 && ((db.prepare("SELECT COUNT(DISTINCT option_id) AS c FROM swipe_votes WHERE poll_id = ? AND user_id = ?").get(poll.id, member.id)?.c || 0) >= options.length))
+              ? (swipeOptions.length > 0 && ((db.prepare("SELECT COUNT(DISTINCT sv.option_id) AS c FROM swipe_votes sv JOIN poll_options po ON po.id = sv.option_id WHERE sv.poll_id = ? AND sv.user_id = ? AND LOWER(TRIM(po.option_text)) NOT IN ('other', 'keep discussing')").get(poll.id, member.id)?.c || 0) >= swipeOptions.length))
               : db.prepare("SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ? LIMIT 1").get(poll.id, member.id);
-            if (!hasVoted && !skippedVotes.has(cacheKey)) {
+            const latestHumanMessage = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ? AND sender_id IS NOT NULL').get(room.id)?.id || 0;
+            const reconsiderKey = `${cacheKey}-discussion-${latestHumanMessage}`;
+            const reconsiderLive = poll.poll_type === 'continuous' && hasVoted && !skippedVotes.has(reconsiderKey);
+            if ((!hasVoted || reconsiderLive) && !skippedVotes.has(cacheKey)) {
+              if (poll.poll_type === 'continuous') skippedVotes.add(reconsiderKey);
               if (options.length === 0) continue;
 
               // Abstention gate: p_abstain = d·(1 - Conscientiousness) (or explicit override).
@@ -750,7 +778,7 @@ export async function runSimulationStep(io) {
 
               // Propose-new-option gate: p_other = c·Openness (or explicit override).
               const otherOption = options.find(o => o.option_text.toLowerCase() === 'other');
-              const useOther = otherOption
+              const useOther = !hasVoted && otherOption
                 && (simulationRandom('write-in', poll.id, member.id) < profile.gates.pOther);
 
               if (useOther) {
@@ -861,7 +889,11 @@ export async function runSimulationStep(io) {
       await Promise.all(roomPromises);
     }
   } catch (error) {
-    if (error.name !== 'AbortError') console.error('[SIMULATION ERROR]', error);
+    if (error.name !== 'AbortError') {
+      simulationState.lastError = error.message || String(error);
+      console.error('[SIMULATION ERROR]', error);
+      await stopSimulation(false);
+    }
   }
 }
 
@@ -878,8 +910,10 @@ export function startSimulation(io, config) {
     model: config.model || 'gpt-5.6-luna',
     seed: Number.isInteger(Number(config.seed)) ? Number(config.seed) : 20260720,
     personas: config.personas || {},
-    preferences: config.preferences || {}
+    preferences: config.preferences || {},
+    lastError: null
   };
+  if (process.env.CIME_ENGINE === 'true') db.prepare('INSERT INTO run_simulation(id, config_json, running) VALUES (1, ?, 1) ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, running = 1').run(JSON.stringify(simulationState));
   global.isSimulationRunning = true;
   global.simulatedPersonas = config.personas || {};
 
@@ -895,10 +929,41 @@ export function startSimulation(io, config) {
   // Run loop sequentially
   async function loop() {
     if (!work.isCurrent()) return;
-    await runWithWorkContext(work, () => runSimulationStep(io));
+    try {
+      await runWithWorkContext(work, () => runSimulationStep(io));
+      if (process.env.CIME_ENGINE === 'true' && work.isCurrent()) db.prepare('UPDATE run_simulation SET config_json = ? WHERE id = 1').run(JSON.stringify({ ...simulationState, memories: [...simulationMemories], skippedVotes: [...skippedVotes] }));
+    } catch (error) {
+      if (work.isCurrent()) {
+        simulationState.lastError = error.message || String(error);
+        await stopSimulation(false);
+      }
+    }
     if (work.isCurrent()) {
       simulationTimeout = setTimeout(loop, 3000);
     }
   }
+  if (Array.isArray(config.memories)) for (const [key, value] of config.memories) simulationMemories.set(key, value);
+  if (Array.isArray(config.skippedVotes)) for (const key of config.skippedVotes) skippedVotes.add(key);
   loop();
+}
+
+export function recoverSimulation(io) {
+  if (process.env.CIME_ENGINE !== 'true') return;
+  const saved = db.prepare('SELECT config_json, running FROM run_simulation WHERE id = 1').get();
+  if (!saved) return;
+  const config = JSON.parse(saved.config_json);
+  if (saved.running) {
+    startSimulation(io, config);
+    return;
+  }
+  // Restore a paused run without starting agents or resetting its history.
+  simulationState = { ...config, isRunning: false };
+  simulationMemories.clear();
+  skippedVotes.clear();
+  personaProfiles.clear();
+  convergenceReviewProcessing.clear();
+  for (const [key, value] of config.memories || []) simulationMemories.set(key, value);
+  for (const key of config.skippedVotes || []) skippedVotes.add(key);
+  global.isSimulationRunning = false;
+  global.simulatedPersonas = {};
 }

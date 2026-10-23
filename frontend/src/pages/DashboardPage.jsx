@@ -1,3 +1,4 @@
+import { participantRunId, sessionKey } from '../platform/client.js';
 import { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { io } from 'socket.io-client';
@@ -6,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext.jsx';
 import cimeLogo from '../img/CIME_LOGO.png';
 import RecapModal from '../components/RecapModal.jsx';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
 const SunIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>;
 const MoonIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>;
@@ -85,7 +86,7 @@ function ProcessModal({ data, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800 flex flex-col max-h-[85vh] transition-colors duration-300">
+      <div className="w-full max-w-2xl rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800 flex flex-col max-h-[85vh] transition-colors duration-300">
         <div ref={scrollRef} onScroll={checkScroll} className="flex-1 overflow-y-auto pr-2 mb-6">
           {page === 1 ? page1Content : page2Content}
         </div>
@@ -113,7 +114,7 @@ export default function DashboardPage() {
   const { token, user, logout } = useAuth();
   const [rooms, setRooms] = useState(() => {
     try {
-      const saved = sessionStorage.getItem('cime_user_rooms_cache');
+      const saved = sessionStorage.getItem(sessionKey('cime_user_rooms_cache'));
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -155,7 +156,7 @@ export default function DashboardPage() {
         if (nextRooms.length > 0) {
           setRooms(nextRooms);
           try {
-            sessionStorage.setItem('cime_user_rooms_cache', JSON.stringify(nextRooms));
+            sessionStorage.setItem(sessionKey('cime_user_rooms_cache'), JSON.stringify(nextRooms));
           } catch {
             // Ignore storage quota / privacy mode failures.
           }
@@ -181,12 +182,12 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const socket = io(SOCKET_URL, {
-      auth: { token },
+      auth: { token, runId: participantRunId },
       transports: ['websocket', 'polling']
     });
     socket.on('rooms_updated', () => loadRooms());
     socket.on('process_started', (data) => {
-      localStorage.removeItem('seen_process_modal');
+      localStorage.removeItem(sessionKey('seen_process_modal'));
       const tokenToStore = data.globalQuestion + '_' + (data.process_started_at || Date.now());
       setModalData({ ...data, tokenToStore });
     });
@@ -201,9 +202,9 @@ export default function DashboardPage() {
       .then((decision) => {
         if (decision) {
           if (decision.current_phase === 'idle') {
-            localStorage.removeItem('seen_process_modal');
+            localStorage.removeItem(sessionKey('seen_process_modal'));
           } else {
-            const seenToken = localStorage.getItem('seen_process_modal');
+            const seenToken = localStorage.getItem(sessionKey('seen_process_modal'));
             const tokenToStore = decision.global_question + '_' + (decision.process_started_at || 'unknown');
             if (seenToken !== tokenToStore) {
               setModalData({
@@ -225,21 +226,39 @@ export default function DashboardPage() {
 
   const closeModal = () => {
     if (modalData?.tokenToStore) {
-      localStorage.setItem('seen_process_modal', modalData.tokenToStore);
+      localStorage.setItem(sessionKey('seen_process_modal'), modalData.tokenToStore);
     } else if (modalData?.globalQuestion) {
-      localStorage.setItem('seen_process_modal', modalData.globalQuestion);
+      localStorage.setItem(sessionKey('seen_process_modal'), modalData.globalQuestion);
     }
     setModalData(null);
   };
 
-  const handleFinish = () => {
-    navigate(location.pathname, { replace: true, state: {} });
-    logout();
-    navigate('/login');
+  const finishing = useRef(false);
+  const handleFinish = async () => {
+    if (finishing.current) return;
+    finishing.current = true;
+    try {
+      // Completion can arrive before the next participant-status refresh.
+      // Check the survey before revoking the participant's session.
+      const { pending } = await apiRequest('/surveys', {}, token);
+      if (pending) {
+        setRecapReport(null);
+        navigate(location.pathname, { replace: true, state: {} });
+        window.dispatchEvent(new Event('cime-surveys-refresh'));
+        return;
+      }
+      navigate(location.pathname, { replace: true, state: {} });
+      logout({ completed: true });
+      navigate('/login');
+    } catch (e) {
+      window.alert(`Unable to finish yet: ${e.message}. Please try again.`);
+    } finally {
+      finishing.current = false;
+    }
   };
 
   return (
-    <div className="min-h-screen bg-white p-6 text-gray-900 transition-colors duration-300 dark:bg-[#131314] dark:text-gray-100">
+    <div className="min-h-screen bg-white p-6 text-gray-900 transition-colors duration-300 dark:bg-[#141413] dark:text-gray-100">
       {modalData && <ProcessModal data={modalData} onClose={closeModal} />}
       {recapReport && (
         <RecapModal
@@ -260,7 +279,7 @@ export default function DashboardPage() {
               
               {/* Mobile: Docs and Agent Monitor buttons under user info */}
               <div className="mt-3 flex gap-3 md:hidden">
-                <Link to="/doc" className="flex items-center justify-center h-10 w-10 rounded-full border border-gray-200 bg-gray-50 text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]" title="Docs">
+                <Link to="/doc" className="flex items-center justify-center h-10 w-10 rounded-full border border-gray-200 bg-gray-50 text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]" title="Docs">
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                 </Link>
                 <Link to="/agents" className="flex items-center justify-center h-10 w-10 rounded-full border border-blue-500/30 bg-blue-50/50 text-blue-700 transition-all hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-200 dark:hover:bg-blue-500/20" title="Agent Monitor">
@@ -273,7 +292,7 @@ export default function DashboardPage() {
           <div className="flex gap-3 mt-1 md:mt-0">
             {/* Desktop: Docs and Agent Monitor buttons inline */}
             <div className="hidden md:flex gap-3">
-              <Link to="/doc" className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]">
+              <Link to="/doc" className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                 <span>Docs</span>
               </Link>
@@ -285,7 +304,7 @@ export default function DashboardPage() {
             {/* Both Mobile & Desktop: Logout button on the right */}
             <button
               onClick={() => setShowLogoutModal(true)}
-              className="flex items-center justify-center h-10 w-10 md:h-auto md:w-auto md:gap-2 rounded-full border border-gray-200 bg-white md:px-5 md:py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-50 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c] cursor-pointer"
+              className="flex items-center justify-center h-10 w-10 md:h-auto md:w-auto md:gap-2 rounded-full border border-gray-200 bg-white md:px-5 md:py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-50 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924] cursor-pointer"
               title="Logout"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -301,7 +320,7 @@ export default function DashboardPage() {
             <Link
               key={room.id}
               to={`/chat/${room.id}`}
-              className="group rounded-3xl border border-gray-200 bg-white p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-gray-300 dark:border-gray-800 dark:bg-[#1e1f20] dark:hover:bg-[#282a2c] dark:hover:border-gray-700"
+              className="group rounded-3xl border border-gray-200 bg-white p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-gray-300 dark:border-gray-800 dark:bg-[#1c1a17] dark:hover:bg-[#2d2924] dark:hover:border-gray-700"
             >
               <div className="flex items-center justify-between">
                 <div>
@@ -310,7 +329,7 @@ export default function DashboardPage() {
                     Open room #{room.id} · {room.participant_count || 0} participant{room.participant_count === 1 ? '' : 's'}
                   </p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500 transition-colors group-hover:bg-blue-600 group-hover:text-white dark:bg-[#282a2c] dark:text-gray-400">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500 transition-colors group-hover:bg-blue-600 group-hover:text-white dark:bg-[#2d2924] dark:text-gray-400">
                   →
                 </div>
               </div>
@@ -318,7 +337,7 @@ export default function DashboardPage() {
           ))}
 
           {!rooms.length && !error ? (
-            <div className="rounded-3xl border border-gray-200 bg-gray-50 p-8 text-center text-gray-500 shadow-sm dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-400">
+            <div className="rounded-3xl border border-gray-200 bg-gray-50 p-8 text-center text-gray-500 shadow-sm dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-400">
               No rooms assigned at the moment. Please wait for an admin to invite you.
             </div>
           ) : null}
@@ -326,7 +345,7 @@ export default function DashboardPage() {
       </div>
       {showLogoutModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in backdrop-blur-sm" onClick={() => setShowLogoutModal(false)}>
-          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800 text-center" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800 text-center" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">Logout</h3>
             <p className="text-gray-600 dark:text-gray-400 mb-6">Are you sure you want to log out?</p>
             <div className="flex gap-3 justify-center">
@@ -349,7 +368,7 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
-      <button onClick={toggleTheme} title={isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme'} className="fixed bottom-6 left-6 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-700 shadow-lg transition-all hover:bg-gray-50 dark:border-gray-700 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]">
+      <button onClick={toggleTheme} title={isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme'} className="fixed bottom-6 left-6 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-700 shadow-lg transition-all hover:bg-gray-50 dark:border-gray-700 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]">
         {isDark ? <SunIcon /> : <MoonIcon />}
       </button>
     </div>

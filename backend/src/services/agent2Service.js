@@ -10,7 +10,7 @@ import { getGroupingSeed } from './decisionWorkService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const promptsDir = path.join(__dirname, '../../prompts');
+const promptsDir = process.env.CIME_PROMPTS_DIR || path.join(__dirname, '../../prompts');
 // client imported from llm.js
 
 function ensurePromptsDir() {
@@ -381,7 +381,7 @@ export function assignPromptToPersonalRooms(promptMarkdown, globalQuestion, io =
     .all(...(scopedParticipantIds || []));
 
   const updateRoom = db.prepare('UPDATE rooms SET system_prompt = ?, is_active = 1, collection_complete = 0, collection_banner = \'\' WHERE id = ?');
-  const setCurrentQuestion = db.prepare('UPDATE rooms SET current_gathering_question_id = ?, gathering_retry_count = 0 WHERE id = ?');
+  const setCurrentQuestion = db.prepare('UPDATE rooms SET current_gathering_question_id = ?, gathering_retry_count = 0, personal_poll_mode = 0 WHERE id = ?');
   const clearMessages = db.prepare('DELETE FROM messages WHERE room_id = ?');
   const insertMessage = db.prepare('INSERT INTO messages (room_id, sender_id, text, timestamp) VALUES (?, NULL, ?, ?)');
   const resetUsers = db.prepare("UPDATE users SET extracted_preferences = '' WHERE is_admin = 0");
@@ -585,7 +585,7 @@ function loadTopicPreferenceSelections(users, allTopics) {
 function buildTopicPreferenceClusters(users, settings, allTopics) {
   if (!users.length) return [];
   const minUsersPerRoom = settings.clustering_min_users_per_room || 2;
-  const minRooms = settings.clustering_min_rooms || 1;
+  const minRooms = settings.clustering_min_rooms || 2;
   const capacityRooms = chooseRoomCount(users.length, minUsersPerRoom, minRooms);
   if (!capacityRooms) return [];
 
@@ -1077,10 +1077,12 @@ export async function createConvergenceDiscussionRoom({ globalQuestion, decision
     // The DISTINCT decisions each group room reached on this topic (write-in winners already carry
     // their real text in `decision`).
     const decisionsSeen = new Map();
+    let unresolvedAssigned = false;
     for (const room of groupRooms) {
       let memory = [];
       try { memory = JSON.parse(room.topic_memory_json || '[]'); } catch (e) {}
       const entry = memory.find((m) => m.key === key);
+      if (entry && (entry.status !== 'resolved' || !String(entry.decision || entry.summary || '').trim())) unresolvedAssigned = true;
       const d = entry && entry.status === 'resolved' ? String(entry.decision || entry.summary || '').trim() : '';
       if (d) { const n = d.toLowerCase(); if (!decisionsSeen.has(n)) decisionsSeen.set(n, d); }
     }
@@ -1093,7 +1095,7 @@ export async function createConvergenceDiscussionRoom({ globalQuestion, decision
       // DISPUTED across rooms -> vote among all the distinct room decisions (up to 8).
       status = 'open';
       options = uniqueDecisions.slice(0, 8);
-    } else if (uniqueDecisions.length === 1) {
+    } else if (uniqueDecisions.length === 1 && !unresolvedAssigned) {
       // AGREED / single room -> pre-resolved; reopening it offers the winner + the top runner-up
       // (most-voted option among all rooms' DECISIVE polls, write-ins resolved; ties broken at random).
       status = 'resolved';
@@ -1111,7 +1113,8 @@ export async function createConvergenceDiscussionRoom({ globalQuestion, decision
     } else {
       // Never resolved by any room -> keep it open with the predefined options.
       status = 'open';
-      options = predefined.length >= 2 ? predefined : getTwoMostVotedOptionsForTopic(key);
+      options = [...new Set([...uniqueDecisions, ...predefined])];
+      if (options.length < 2) options = getTwoMostVotedOptionsForTopic(key);
     }
 
     // A swipe needs at least two options; backfill from the predefined list if necessary.

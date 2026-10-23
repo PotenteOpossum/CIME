@@ -16,6 +16,7 @@ import {
   renderTemplate,
   settingToNudgeDelayMs,
   settingToTimeBeforePollMs,
+  settingToFinalVoteMs,
   getConfiguredModels,
 } from './agentConfigService.js';
 import { evaluateResponseValidity } from './responseValidityService.js';
@@ -30,6 +31,7 @@ const groupNudgeTimers = new Map();
 const groupNudgeLastAttemptAt = new Map();
 const convergenceReviewTimers = new Map();
 const processingRooms = new Set();
+const finalReportLocks = new Set();
 // Per-poll serialization for live-vote suggestion processing. Two participants can submit the
 // same brand-new option at the same time; without serialization both pass semantic-duplicate
 // detection (each embeds against the option set before the other commits) and two identical
@@ -239,15 +241,7 @@ function getContinuousMetrics(pollId, roomId) {
     JOIN users u ON u.id = rm.user_id
     WHERE rm.room_id = ? AND u.is_admin = 0
   `).get(roomId)?.c || 0;
-  const counts = db.prepare(`
-    SELECT pv.option_id, po.option_text, COUNT(DISTINCT pv.user_id) AS votes
-    FROM poll_votes pv
-    JOIN poll_options po ON po.id = pv.option_id AND po.poll_id = ?
-    JOIN users u ON u.id = pv.user_id AND u.is_admin = 0
-    WHERE pv.poll_id = ?
-    GROUP BY pv.option_id
-    ORDER BY votes DESC, pv.option_id DESC
-  `).all(pollId, pollId);
+  const counts = getContinuousGroupedLeaders(pollId).map((entry) => ({ ...entry, option_text: entry.label }));
   const voted = db.prepare(`
     SELECT COUNT(DISTINCT pv.user_id) AS c
     FROM poll_votes pv
@@ -263,19 +257,19 @@ function getContinuousMetrics(pollId, roomId) {
     : 0;
   const leader = counts[0] || null;
   const quorumReached = voted >= quorumRequired;
-  const approvalReached = !!leader && leader.votes >= approvalRequired;
+  const approvalReached = !!leader && leader.votes >= approvalRequired && (!counts[1] || counts[1].votes < leader.votes);
   return { eligible, counts, voted, quorumRequired, approvalRequired, quorumReached, approvalReached, leader };
 }
 
 function continuousAnnouncementKey(text) {
-  return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 180);
+  return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 // Current live-vote leaders, grouped so each distinct write-in counts as its own option (rather
 // than lumping every "Other" vote together) and labelled with the write-in text, not "Other".
 function getContinuousGroupedLeaders(pollId) {
   const currentVotes = db.prepare(`
-    SELECT pv.option_id, po.option_text, pv.custom_option_text, pv.created_at
+    SELECT pv.user_id, pv.option_id, po.option_text, pv.custom_option_text, pv.created_at
     FROM poll_votes pv
     JOIN poll_options po ON po.id = pv.option_id AND po.poll_id = ?
     JOIN users u ON u.id = pv.user_id AND u.is_admin = 0
@@ -287,10 +281,9 @@ function getContinuousGroupedLeaders(pollId) {
       ? String(vote.custom_option_text || '').trim()
       : '';
     const label = writeIn || vote.option_text;
-    const key = writeIn
-      ? `custom:${continuousAnnouncementKey(writeIn)}`
-      : `option:${vote.option_id}`;
-    const current = grouped.get(key) || { key, label, votes: 0, latestAt: 0 };
+    if (['other', 'keep discussing'].includes(normalizeLiveOption(label))) continue;
+    const key = `text:${normalizeLiveOption(label)}`;
+    const current = grouped.get(key) || { key, label, option_id: vote.option_id, votes: 0, latestAt: 0 };
     current.votes += 1;
     current.latestAt = Math.max(current.latestAt, new Date(vote.created_at).getTime() || 0);
     grouped.set(key, current);
@@ -312,18 +305,21 @@ export function announceContinuousVoteChange({ pollId, roomId, optionId, customO
   // message, so "a new option was proposed" and the resulting leader/tie update do not arrive
   // as two separate bubbles at the same instant.
   const parts = [];
-  if (isOther && customText && claimPollAnnouncement(pollId, `custom-option:${continuousAnnouncementKey(customText)}`)) {
+  let tieDiscussion = null;
+  if (customText && claimPollAnnouncement(pollId, `custom-option:${continuousAnnouncementKey(customText)}`)) {
     parts.push(`A participant proposed a new option for the live vote: **${customText}**.`);
   }
 
   const leaders = getContinuousGroupedLeaders(pollId);
   const leader = leaders[0];
   if (leader) {
-    const tied = leaders.filter((entry) => entry.votes === leader.votes).slice(0, 3);
+    const tied = leaders.filter((entry) => entry.votes === leader.votes);
     const leaderKey = tied.map((entry) => entry.key).join('|');
     if (claimPollAnnouncement(pollId, `leader:${leaderKey}:${leader.votes}`)) {
       if (tied.length > 1) {
         parts.push(`The live vote is currently tied between ${tied.map((entry) => `**${entry.label}**`).join(' and ')} with ${leader.votes} vote(s) each.`);
+        if (claimPollAnnouncement(pollId, `tie-discussion:${leaderKey}`))
+          tieDiscussion = tied.map((entry) => entry.label);
       } else {
         parts.push(`The current leading option is **${leader.label}** with ${leader.votes} vote(s).`);
       }
@@ -331,6 +327,45 @@ export function announceContinuousVoteChange({ pollId, roomId, optionId, customO
   }
 
   if (parts.length > 0) createBotMessage(roomId, parts.join(' '));
+  if (tieDiscussion) handleTieProCon(roomId, tieDiscussion, pollId).catch((error) => console.error('Tie discussion failed:', error));
+  const votedOptions = leaders.filter((entry) => entry.votes > 0);
+  const totalVotes = votedOptions.reduce((sum, entry) => sum + entry.votes, 0);
+  if (totalVotes >= 3 && votedOptions.length >= 2
+      && claimPollAnnouncement(pollId, 'semantic-option-review')) {
+    handleSimilarOptionReview(roomId, pollId).catch((error) => console.error('Similar-option review failed:', error));
+  }
+}
+
+async function handleSimilarOptionReview(roomId, pollId) {
+  if (!client) return;
+  const poll = db.prepare('SELECT question, is_closed, expires_at FROM polls WHERE id = ? AND room_id = ?').get(pollId, roomId);
+  if (!poll || poll.is_closed || (poll.expires_at && poll.expires_at <= nowIso())) return;
+  const options = getContinuousOptionSnapshot(pollId).filter((option) => (
+    option.votes > 0 && !['other', 'keep discussing'].includes(normalizeLiveOption(option.option_text))
+  ));
+  if (options.length < 2 || options.reduce((sum, option) => sum + option.votes, 0) < 3) return;
+  const response = await client.chat.completions.create({
+    model: getConfiguredModels().primaryModel,
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: 'Check whether any voted options express the same practical choice despite different wording. Return JSON: {"same_meaning": boolean, "option_ids": [number, number], "clearer_option_id": number, "message": string}. Only report a match when target group, eligibility, threshold, action, and policy scope are materially the same; topical similarity is not enough. Do not conflate an unrestricted group with a subgroup or a choice that adds a condition. If there is a genuine paraphrase, write a friendly chat message of at most 2 short sentences that names the two options and suggests using the clearer existing wording. Do not change or combine anyone’s votes, and do not ask how participants will vote. If no clear equivalent exists, return same_meaning=false.' },
+      { role: 'user', content: JSON.stringify({ question: poll.question, voted_options: options }) }
+    ],
+    metadata: { roomId, caller: 'agent3-similar-option-review' }
+  });
+  const result = JSON.parse(response.choices?.[0]?.message?.content || '{}');
+  const currentPoll = db.prepare('SELECT is_closed, expires_at FROM polls WHERE id = ?').get(pollId);
+  if (!result.same_meaning || !currentPoll || currentPoll.is_closed
+      || (currentPoll.expires_at && currentPoll.expires_at <= nowIso())) return;
+  const ids = Array.isArray(result.option_ids) ? result.option_ids.map(Number) : [];
+  const pair = options.filter((option) => ids.includes(option.id));
+  const clearer = pair.find((option) => option.id === Number(result.clearer_option_id));
+  if (pair.length !== 2 || !clearer || typeof result.message !== 'string') return;
+  const sentences = result.message.trim().match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+  let message = sentences.slice(0, 2).join(' ').trim().split(/\s+/).slice(0, 40).join(' ');
+  if (message && !/[.!?]$/.test(message)) message += '.';
+  if (message) createBotMessage(roomId, message);
 }
 
 function getContinuousOptionSnapshot(pollId) {
@@ -449,6 +484,15 @@ export async function finalizeContinuousReview(pollId, roomId) {
     try { return JSON.parse(poll.timeout_snapshot_json || '[]'); } catch { return []; }
   })();
   const rankingOptions = getContinuousRankingOptions(pollId, snapshot);
+  // An all-zero swipe can leave live voting with only the Other control.
+  // Ranking still needs substantive choices; recover the configured answers
+  // rather than ranking Other or restarting another swipe/live cycle.
+  if (rankingOptions.length < 2) {
+    for (const option of getPredefinedTopicOptions(poll.suggestion || poll.question)) {
+      if (!rankingOptions.some((value) => normalizeTopicKey(value) === normalizeTopicKey(option))) rankingOptions.push(option);
+      if (rankingOptions.length >= 2) break;
+    }
+  }
   const memory = parseRoomMemory(db.prepare('SELECT topic_memory_json FROM rooms WHERE id = ?').get(roomId));
   const key = poll.suggestion || poll.question;
   const entry = memory.find((item) => normalizeTopicKey(item.key || item.suggestion || item.question) === normalizeTopicKey(key));
@@ -461,10 +505,10 @@ export async function finalizeContinuousReview(pollId, roomId) {
   }
   if (claimPollAnnouncement(pollId, 'ranking-open')) {
     createBotMessage(roomId, rankingOptions.length > 0
-      ? `The live voting phase has ended. Here is the result so far: ${snapshot.filter((o) => o.votes > 0).slice(0, getDecisionSettings().maximum_visible_options || 8).map((o) => `**${o.option_text}** (${o.votes})`).join(', ')}. The final ranking vote will open in one minute.`
-      : 'The live voting phase ended without any active votes. We will use the predefined topic options for the final ranking vote, which opens in one minute.');
+      ? `Live voting has ended. The final ranking vote is opening now${snapshot.some((o) => o.votes > 0) ? `; current support was ${snapshot.filter((o) => o.votes > 0).slice(0, getDecisionSettings().maximum_visible_options || 8).map((o) => `**${o.option_text}** (${o.votes})`).join(', ')}.` : '.'}`
+      : 'Live voting has ended without active votes. The final ranking vote is opening now using the predefined options.');
   }
-  const options = rankingOptions.length >= 2 ? rankingOptions : snapshot.map((o) => o.option_text).filter(Boolean).slice(0, 8);
+  const options = rankingOptions;
   if (options.length < 2) {
     db.prepare('UPDATE polls SET transitioned_to_poll_id = -1 WHERE id = ?').run(pollId);
     createBotMessage(roomId, 'There were not enough valid options to open a ranking vote. The topic remains open for discussion.');
@@ -483,7 +527,6 @@ export async function finalizeContinuousReview(pollId, roomId) {
   );
   if (!rankingPollId) return null;
   db.prepare('UPDATE polls SET transitioned_to_poll_id = ? WHERE id = ?').run(rankingPollId, pollId);
-  createBotMessage(roomId, 'The ranking vote is now open. Please rank the remaining options from most to least preferred.');
   emitPollsUpdated(roomId);
   return rankingPollId;
 }
@@ -501,14 +544,15 @@ async function resolveContinuousPoll(poll, roomId) {
 
   // Track qualifying support while the minimum live period runs. Waiting until
   // that period ends makes consensus impossible when minimum and maximum match.
-  if (!thresholdsReached) {
+  if (!thresholdsReached || poll.stability_leader_key !== metrics.leader?.key) {
     if (poll.stability_started_at) {
-      db.prepare('UPDATE polls SET stability_started_at = NULL WHERE id = ? AND is_closed = 0').run(poll.id);
+      db.prepare('UPDATE polls SET stability_started_at = NULL, stability_leader_key = NULL WHERE id = ? AND is_closed = 0').run(poll.id);
     }
     stabilityStartedAt = null;
-  } else if (stabilityStartedAt === null && !expired) {
+  }
+  if (thresholdsReached && stabilityStartedAt === null && !expired) {
     const started = nowIso();
-    const upd = db.prepare('UPDATE polls SET stability_started_at = ? WHERE id = ? AND is_closed = 0 AND stability_started_at IS NULL').run(started, poll.id);
+    const upd = db.prepare('UPDATE polls SET stability_started_at = ?, stability_leader_key = ? WHERE id = ? AND is_closed = 0 AND stability_started_at IS NULL').run(started, metrics.leader.key, poll.id);
     stabilityStartedAt = new Date(started).getTime();
     if (upd.changes === 1 && claimPollAnnouncement(poll.id, 'quorum-reached')) {
       const leaderLabel = getContinuousGroupedLeaders(poll.id)[0]?.label;
@@ -538,17 +582,22 @@ async function resolveContinuousPoll(poll, roomId) {
   if (poll.review_until || poll.transitioned_to_poll_id) return false;
   const closedAt = nowIso();
   if (!stableConsensus) {
+    const roomDeadlinePassed = !!db.prepare('SELECT room_timer_expired_at FROM rooms WHERE id = ?').get(roomId)?.room_timer_expired_at;
+    const reviewUntil = roomDeadlinePassed ? closedAt : new Date(now + 60 * 1000).toISOString();
     const snapshot = getContinuousOptionSnapshot(poll.id);
     const update = db.prepare(`
       UPDATE polls
       SET is_closed = 1, closed_at = ?, has_consensus = 0, closed_reason = 'live_timeout',
           timeout_snapshot_json = ?, review_until = ?
       WHERE id = ? AND is_closed = 0
-    `).run(closedAt, JSON.stringify(snapshot), new Date(now + 60 * 1000).toISOString(), poll.id);
+    `).run(closedAt, JSON.stringify(snapshot), reviewUntil, poll.id);
     if (update.changes !== 1) return false;
-    createBotMessage(roomId, `The live voting phase has ended without a stable agreement. The final ranking vote will begin in one minute.`);
+    createBotMessage(roomId, roomDeadlinePassed
+      ? 'Live voting ended without agreement. The final ranking vote is starting now.'
+      : 'Live voting ended without agreement. The final ranking vote will start after a short review.');
     emitPollsUpdated(roomId);
-    scheduleContinuousReview(poll.id, roomId, new Date(now + 60 * 1000).toISOString());
+    if (roomDeadlinePassed) await finalizeContinuousReview(poll.id, roomId);
+    else scheduleContinuousReview(poll.id, roomId, reviewUntil);
     return true;
   }
 
@@ -619,6 +668,20 @@ export function recordContinuousVoteAudit({
   })();
 }
 
+export function normalizeLiveOption(text) {
+  return String(text || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function ensureLiveOption(pollId, text) {
+  const current = db.prepare('SELECT is_closed, expires_at FROM polls WHERE id = ?').get(pollId);
+  if (!current || current.is_closed || (current.expires_at && current.expires_at <= nowIso())) throw new Error('Poll is closed');
+  const label = String(text || '').trim();
+  if (label.length < 3 || label.length > 240) throw new Error('Option must contain 3 to 240 characters.');
+  const existing = db.prepare('SELECT id, option_text FROM poll_options WHERE poll_id = ?').all(pollId)
+    .find((option) => normalizeLiveOption(option.option_text) === normalizeLiveOption(label));
+  return existing?.id || Number(db.prepare('INSERT INTO poll_options (poll_id, option_text) VALUES (?, ?)').run(pollId, label).lastInsertRowid);
+}
+
 async function submitContinuousSuggestionUnlocked({ pollId, userId, text, requestId = null }) {
   const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
   if (!poll || poll.poll_type !== 'continuous' || poll.is_closed === 1) throw new Error('Continuous poll is not open');
@@ -664,31 +727,9 @@ async function submitContinuousSuggestionUnlocked({ pollId, userId, text, reques
     });
     const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
     let analysis = { ...parsed };
-    let canonicalId = Number.isInteger(parsed.duplicate_option_id) ? parsed.duplicate_option_id : null;
-    if (!canonicalId && parsed.valid && parsed.relevant && client.embeddings?.create) {
-      try {
-        const embedding = await client.embeddings.create({
-          model: env.embeddingModel,
-          input: [sourceText, ...options.map((option) => option.option_text)],
-          metadata: { roomId: poll.room_id, caller: 'continuous_option_validation_embedding' }
-        });
-        const vectors = embedding.data?.map((item) => item.embedding || []) || [];
-        const cosine = (a, b) => {
-          const dot = a.reduce((sum, value, index) => sum + value * (b[index] || 0), 0);
-          const na = Math.sqrt(a.reduce((sum, value) => sum + value * value, 0));
-          const nb = Math.sqrt(b.reduce((sum, value) => sum + value * value, 0));
-          return na && nb ? dot / (na * nb) : 0;
-        };
-        let best = { score: 0, id: null };
-        for (let index = 1; index < vectors.length; index += 1) {
-          const score = cosine(vectors[0] || [], vectors[index] || []);
-          if (score > best.score) best = { score, id: options[index - 1]?.id };
-        }
-        if (best.score >= 0.9) { canonicalId = best.id; analysis = { ...analysis, embedding_similarity: best.score }; }
-      } catch (embeddingError) {
-        analysis = { ...analysis, embedding_error: embeddingError.message || 'embedding unavailable' };
-      }
-    }
+    // Similar wording can encode a different eligibility rule or policy. Only exact
+    // normalized matches may be merged automatically; preserve the submitted meaning.
+    let canonicalId = options.find((option) => normalizeLiveOption(option.option_text) === normalizeLiveOption(sourceText))?.id || null;
     if (!parsed.valid || !parsed.relevant) {
       db.prepare("UPDATE poll_suggestions SET status = 'rejected', analysis_json = ?, processed_at = ? WHERE id = ? AND status = 'pending'").run(JSON.stringify(analysis), nowIso(), suggestionId);
       return { id: suggestionId, status: 'rejected', reason: parsed.reason || 'Suggestion was not relevant.' };
@@ -700,8 +741,8 @@ async function submitContinuousSuggestionUnlocked({ pollId, userId, text, reques
         return { id: suggestionId, status: 'merged', canonical_option_id: canonicalId };
       }
     }
-    const canonicalText = String(parsed.canonical_text || sourceText).trim().slice(0, 240);
-    const optionResult = db.prepare('INSERT INTO poll_options (poll_id, option_text) VALUES (?, ?)').run(pollId, canonicalText);
+    const canonicalText = sourceText;
+    const optionResult = { lastInsertRowid: ensureLiveOption(pollId, sourceText) };
     db.prepare("UPDATE poll_suggestions SET status = 'accepted', canonical_option_id = ?, analysis_json = ?, processed_at = ? WHERE id = ? AND status = 'pending'").run(Number(optionResult.lastInsertRowid), JSON.stringify(analysis), nowIso(), suggestionId);
     createBotMessage(poll.room_id, `A new relevant option has been added to the live vote: **${canonicalText}**.`);
     emitPollsUpdated(poll.room_id);
@@ -1021,22 +1062,8 @@ export async function reconcileClosedDiscussionRooms() {
       if (round >= 2) {
         // The final report is intentional work after completion. It belongs to
         // this completed run and must not carry on into a replacement run.
-        const reportWork = createDecisionWorkContext({ workType: 'final-report', allowCompleted: true });
-        setImmediate(() => runWithWorkContext(reportWork, async () => {
-          try {
-            throwIfWorkCancelled();
-            const cRoom = db.prepare("SELECT id FROM rooms WHERE room_type = 'convergence' AND decision_round = ? ORDER BY id DESC LIMIT 1").get(round);
-            if (cRoom) {
-              const report = await generateRoomAnalysisReport(cRoom.id);
-              throwIfWorkCancelled();
-              if (ioRef) {
-                ioRef.emit('convergence_completed', { roomId: cRoom.id, report });
-              }
-            }
-          } catch (err) {
-            if (err.name !== 'AbortError') console.error('Failed to emit convergence completed report:', err.message);
-          }
-        }));
+        const cRoom = db.prepare("SELECT id FROM rooms WHERE room_type = 'convergence' AND decision_round = ? ORDER BY id DESC LIMIT 1").get(round);
+        if (cRoom) setImmediate(() => generateAndEmitFinalReport(cRoom.id));
       }
       return;
     }
@@ -1740,6 +1767,11 @@ async function evaluateEnoughInfo(globalQuestion, decisionContext, transcript, r
     };
   }
 
+  if (db.prepare('SELECT personal_poll_mode FROM rooms WHERE id = ?').get(roomId)?.personal_poll_mode === 1) {
+    const answers = db.prepare("SELECT q.topic, a.answer_text FROM gathering_answers a JOIN gathering_questions q ON q.id = a.question_id WHERE a.user_id = ? AND a.response_status = 'accepted' ORDER BY q.question_order, q.id").all(userId);
+    return { enough_info: true, preference_summary: answers.map((answer) => `${answer.topic}: ${answer.answer_text}`).join('; ') || 'No preferences recorded.' };
+  }
+
   if (!client) {
     return {
       enough_info: true,
@@ -1949,6 +1981,7 @@ export async function evaluateReadyToVote(roomId, globalQuestion, decisionContex
     const lastBotAnnouncementIndex = transcript.map(m => m.sender_name === 'Bot' && (
       m.text.includes('mandatory poll') ||
       m.text.includes('we agreed on:') ||
+      /^For \*\*/.test(m.text) ||
       m.text.includes('agreement was reached on:') ||
       m.text.includes('Discussion reopened')
     )).lastIndexOf(true);
@@ -2219,15 +2252,15 @@ export function createMandatoryPoll(roomId, question, options, reason, suggestio
   }
   mandatoryPollCreationLocks.add(pollKey);
   try {
-  const room = db.prepare('SELECT room_type, topic_memory_json FROM rooms WHERE id = ?').get(roomId);
+  const room = db.prepare('SELECT room_type, topic_memory_json, final_vote_not_before FROM rooms WHERE id = ?').get(roomId);
 
-  // Group/convergence rooms must never have two open polls at once. Multiple schedulers
+  // Every room must have at most one open poll. Multiple schedulers
   // (initial group setup, the 15s poll ticker, message-driven checks) can race into this
-  // function; this in-lock check makes creation idempotent for non-personal rooms.
-  if (room && room.room_type !== 'personal') {
+  // function; this in-lock check makes creation idempotent.
+  if (room) {
     const alreadyOpen = db
-      .prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0 AND (expires_at IS NULL OR expires_at > ?) LIMIT 1')
-      .get(roomId, nowIso());
+      .prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0 LIMIT 1')
+      .get(roomId);
     if (alreadyOpen) return alreadyOpen.id;
   }
 
@@ -2261,6 +2294,14 @@ export function createMandatoryPoll(roomId, question, options, reason, suggestio
       isGlobalQuestion = true;
     }
   }
+
+  if (isGlobalQuestion && ['group', 'convergence'].includes(room?.room_type)
+      && getUnresolvedRoomMemoryTopics(roomId).some((topic) => !topic.is_general_question && normalizeTopicKey(topic.key) !== 'general-question')) {
+    return null;
+  }
+
+  if (isGlobalQuestion && ['group', 'convergence'].includes(room?.room_type)
+      && room.final_vote_not_before && Date.now() < new Date(room.final_vote_not_before).getTime()) return null;
 
   // If this is a subsequent poll (prior count >= 1),
   // we load the clustered options from the room memory (if present).
@@ -2757,6 +2798,7 @@ export async function checkPersonalRoom(roomId, userId) {
       return false;
     }
 
+    repairPersonalPollSequence(roomId);
     const openPoll = db.prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0').get(roomId);
     if (openPoll) {
       console.log(`[checkPersonalRoom] returning false because openPoll exists: ${openPoll.id}`);
@@ -2768,24 +2810,23 @@ export async function checkPersonalRoom(roomId, userId) {
     const isTopicPrefStrategy = settings.clustering_strategy === 'topic_preference';
 
     const expectedPrefQuestion = "Which of the following topics are most relevant or interesting to you? (Select all that apply)";
-    const prefPollExists = db.prepare('SELECT id, is_closed FROM polls WHERE room_id = ? AND question = ?').get(roomId, expectedPrefQuestion);
+    const prefPollExists = db.prepare("SELECT id, is_closed FROM polls WHERE room_id = ? AND question = ? AND closed_reason <> 'personal_poll_queued'").get(roomId, expectedPrefQuestion);
 
     const generalQuestionRow = getGeneralQuestionRow();
     const expectedQuestionText = generalQuestionRow ? `How open are you to debate and changing your mind on the following topic?\n\n"${generalQuestionRow.question_text}"` : null;
-    const opennessPollExists = db.prepare('SELECT id, is_closed FROM polls WHERE room_id = ? AND question = ?').get(roomId, expectedQuestionText);
+    const opennessPollExists = db.prepare("SELECT id, is_closed FROM polls WHERE room_id = ? AND question = ? AND closed_reason <> 'personal_poll_queued'").get(roomId, expectedQuestionText);
     const gatheringQuestions = getAllDeliberationQuestions().filter((q) => q.is_general_question !== 1);
     const answeredQuestionIds = getAnsweredQuestionIds(userId);
     const allRequiredAnswered = gatheringQuestions.every((q) => answeredQuestionIds.has(q.id));
 
-    // If topic preference strategy is enabled, wait until the user has answered all deliberation questions
-    // before opening the routing poll. This keeps the final deliberation question available long enough to answer.
-    if (isTopicPrefStrategy && !allRequiredAnswered) {
-      if (!prefPollExists) {
-        const transcript = getTranscript(roomId, 20);
-        const latestHumanMessage = [...transcript].reverse().find(isHumanMessage);
+    if (!allRequiredAnswered) {
+      const fallbackMode = db.prepare('SELECT personal_poll_mode FROM rooms WHERE id = ?').get(roomId)?.personal_poll_mode === 1;
+      if (fallbackMode) {
+        openNextPersonalFallbackPoll(roomId, userId);
+      } else {
+        const latestHumanMessage = [...getTranscript(roomId, 20)].reverse().find(isHumanMessage);
         const currentQuestion = getCurrentGatheringQuestion(roomId) || gatheringQuestions.find((q) => !answeredQuestionIds.has(q.id));
         if (latestHumanMessage && currentQuestion) await captureSequentialAnswer(userId, latestHumanMessage.id, latestHumanMessage.text, roomId, currentQuestion);
-        return false;
       }
       return false;
     }
@@ -2961,119 +3002,69 @@ function schedulePollResolution(pollId, roomId, expiresAt) {
   pollTimers.set(pollId, timer);
 }
 
+function openNextPersonalFallbackPoll(roomId, userId) {
+  const answered = getAnsweredQuestionIds(userId);
+  const next = getRequiredDeliberationQuestions().find((question) => !answered.has(question.id));
+  if (!next) return null;
+  const expiresAt = new Date(Date.now() + (getDecisionSettings().poll_timer_minutes || 2) * 60000).toISOString();
+  db.prepare('UPDATE rooms SET current_gathering_question_id = ?, gathering_retry_count = 0 WHERE id = ?').run(next.id, roomId);
+  const queued = db.prepare("SELECT id FROM polls WHERE room_id = ? AND question = ? AND closed_reason = 'personal_poll_queued' ORDER BY id ASC LIMIT 1").get(roomId, next.question_text);
+  if (queued) {
+    db.prepare("UPDATE polls SET is_closed = 0, closed_at = NULL, closed_reason = '', expires_at = ? WHERE id = ?").run(expiresAt, queued.id);
+    schedulePollResolution(queued.id, roomId, expiresAt);
+    setTimeout(() => resolvePoll(queued.id, roomId).catch(console.error), 0);
+    emitPollsUpdated(roomId);
+    return queued.id;
+  }
+  const options = parsePredefinedAnswers(next);
+  return createMandatoryPoll(roomId, next.question_text,
+    options.length >= 2 ? options : ['I have no preference', 'Other'],
+    'Personal interview fallback: answer the current question before continuing.',
+    next.topic, null, true, 'plurality', 'none', expiresAt);
+}
+
+export function repairPersonalPollSequence(roomId) {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+  if (room?.room_type !== 'personal' || room.is_active !== 1 || room.collection_complete === 1) return;
+  const polls = db.prepare('SELECT * FROM polls WHERE room_id = ? AND mandatory = 1 AND is_closed = 0 ORDER BY id ASC').all(roomId);
+  const legacyFallback = parseRoomMemory(room).some((entry) => String(entry.reason || '').startsWith('Personal room timer expired'));
+  if (room.personal_poll_mode !== 1 && !legacyFallback && polls.length < 2) return;
+  db.prepare('UPDATE rooms SET personal_poll_mode = 1 WHERE id = ?').run(roomId);
+  const userId = getPrimaryPersonalUserId(roomId);
+  if (!userId) return;
+  const answered = getAnsweredQuestionIds(userId);
+  const next = getRequiredDeliberationQuestions().find((question) => !answered.has(question.id));
+  // Only the current interview topic is votable. Future ballots keep their
+  // records and votes, but are queued until their question becomes current.
+  const current = next ? polls.find((poll) => poll.question === next.question_text) :
+    polls.find((poll) => poll.question.startsWith('How open are you to debate') || poll.question.includes('relevant or interesting to you'));
+  for (const poll of polls) {
+    if (poll.id === current?.id) continue;
+    db.prepare("UPDATE polls SET is_closed = 1, closed_at = ?, closed_reason = 'personal_poll_queued' WHERE id = ?").run(nowIso(), poll.id);
+  }
+  if (legacyFallback) {
+    db.prepare("UPDATE messages SET text = ? WHERE room_id = ? AND text LIKE 'It looks like you might be away.%'")
+      .run('Please answer the current question in the poll. We will continue one question at a time, then ask how open you are to debate.', roomId);
+  }
+  if (polls.length > (current ? 1 : 0)) emitPollsUpdated(roomId);
+}
+
 export async function handleExpiredPersonalRoom(room) {
-  if (!room || room.room_type !== 'personal' || room.is_active !== 1) return { handled: false };
+  room = room?.id ? db.prepare('SELECT * FROM rooms WHERE id = ?').get(room.id) : null;
+  if (!room || room.room_type !== 'personal' || room.is_active !== 1 || room.collection_complete === 1) return { handled: false };
   const expiresAt = room.timer_expires_at ? new Date(room.timer_expires_at).getTime() : 0;
   if (!expiresAt || expiresAt > Date.now()) return { handled: false };
-
-  let user = db
-    .prepare(
-      `
-      SELECT u.id, u.username
-      FROM room_members rm
-      JOIN users u ON u.id = rm.user_id
-      WHERE rm.room_id = ?
-        AND u.is_admin = 0
-      ORDER BY u.username ASC
-      LIMIT 1
-    `
-    )
-    .get(room.id);
-  if (!user) return { handled: false };
-
-  // The personal room timer is the hard deadline. A poll without an expires_at
-  // (the normal personal-room case) used to remain open forever here: the timer
-  // was cleared, but the poll was never resolved and collection_complete stayed 0.
-  // Force-expire every currently open personal poll and let the normal resolver
-  // apply its existing fallback/completion logic. The small guard also handles
-  // the resolver creating the next personal poll while closing the previous one.
-  db.prepare('UPDATE rooms SET timer_expires_at = NULL WHERE id = ?').run(room.id);
-  for (let pass = 0; pass < 4; pass += 1) {
-    const openPolls = db
-      .prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0 ORDER BY id ASC')
-      .all(room.id);
-    if (!openPolls.length) break;
-    for (const openPoll of openPolls) {
-      db.prepare('UPDATE polls SET expires_at = ? WHERE id = ? AND is_closed = 0').run(nowIso(), openPoll.id);
-      await resolvePoll(openPoll.id, room.id);
-    }
-    const currentRoom = db.prepare('SELECT collection_complete FROM rooms WHERE id = ?').get(room.id);
-    if (currentRoom?.collection_complete === 1) {
-      emitRoomUpdated(room.id, true);
-      emitDecisionStatus(ioRef);
-      await maybeAdvanceToGroupPhase();
-      return { handled: true, created: 0 };
-    }
-  }
-
-  // A resolver may remove the only non-admin participant from a timed-out
-  // mandatory poll. Do not leave the orphaned room in an unfinished state.
-  user = db
-    .prepare(
-      `
-      SELECT u.id, u.username
-      FROM room_members rm
-      JOIN users u ON u.id = rm.user_id
-      WHERE rm.room_id = ?
-        AND u.is_admin = 0
-      ORDER BY u.username ASC
-      LIMIT 1
-    `
-    )
-    .get(room.id);
-  if (!user) {
-    db.prepare("UPDATE rooms SET collection_complete = 1, collection_banner = 'Quality Agent has enough information and is waiting for the other participants.' WHERE id = ?").run(room.id);
-    emitRoomUpdated(room.id, true);
-    emitDecisionStatus(ioRef);
-    await maybeAdvanceToGroupPhase();
-    return { handled: true, created: 0 };
-  }
-
-  const questions = getRequiredDeliberationQuestions();
-  const answeredIds = getAnsweredQuestionIds(user.id);
-  const missingQuestions = questions.filter((question) => !answeredIds.has(question.id));
-  const generalQuestion = getGeneralQuestionRow();
-  const generalAnswered = generalQuestion
-    ? !!db
-      .prepare('SELECT 1 FROM gathering_answers WHERE question_id = ? AND user_id = ? AND response_status IN (\'accepted\', \'skipped_invalid\')')
-      .get(generalQuestion.id, user.id)
-    : true;
-  const allMissing = [...missingQuestions];
-  const hasOpennessPoll = db.prepare('SELECT id FROM polls WHERE room_id = ? AND question LIKE ?').get(room.id, 'How open are you to debate%');
-  if (!generalAnswered && generalQuestion && !hasOpennessPoll) {
-    allMissing.push(generalQuestion);
-  }
-  if (!allMissing.length) {
-    db.prepare("UPDATE rooms SET collection_complete = 1, collection_banner = 'Quality Agent has enough information and is waiting for the other participants.' WHERE id = ?").run(room.id);
-    createBotMessage(room.id, renderTemplate('agent3-templates.md#Personal Complete Message'));
-    emitRoomUpdated(room.id, true);
-    emitDecisionStatus(ioRef);
-    await maybeAdvanceToGroupPhase();
-    return { handled: true, created: 0 };
-  }
-
-  let created = 0;
-  for (const question of allMissing) {
-    const options = parsePredefinedAnswers(question);
-    const settings = getDecisionSettings();
-    const pollTimerMinutes = settings.poll_timer_minutes || 2;
-    const expiresAt = new Date(Date.now() + pollTimerMinutes * 60 * 1000).toISOString();
-    createMandatoryPoll(
-      room.id,
-      question.question_text,
-      options.length >= 2 ? options : ['Keep discussing'],
-      'Personal room timer expired; user must vote to continue.',
-      question.topic || question.question_text,
-      null, // replacesOption
-      true, // suppressMessage
-      'plurality', // pollType
-      'none', // chainStage
-      expiresAt // expiresAt
-    );
-    created += 1;
-  }
-  createBotMessage(room.id, renderTemplate('agent3-templates.md#Personal Timer Poll Message', { count: created }));
-  logAgentEvent('agent3', 'Personal room timer expired', `Room ${room.id}: created ${created} poll(s) for unanswered questions.`);
+  const userId = getPrimaryPersonalUserId(room.id);
+  if (!userId) return { handled: false };
+  // The interview deadline switches to ballots, one question at a time. It
+  // never force-closes a ballot or exposes the final proposal vote here.
+  db.prepare('UPDATE rooms SET timer_expires_at = NULL, personal_poll_mode = 1 WHERE id = ?').run(room.id);
+  repairPersonalPollSequence(room.id);
+  const existing = db.prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0').get(room.id);
+  await checkPersonalRoom(room.id, userId);
+  const current = db.prepare('SELECT id FROM polls WHERE room_id = ? AND is_closed = 0').get(room.id);
+  const created = current && current.id !== existing?.id ? 1 : 0;
+  if (created) createBotMessage(room.id, 'The interview time has ended. Please answer this question in the poll. We will continue one question at a time, then ask how open you are to debate.');
   emitDecisionStatus(ioRef);
   return { handled: true, created };
 }
@@ -3090,98 +3081,24 @@ export async function handleExpiredGroupRoom(room) {
   const expiresAt = room.timer_expires_at ? new Date(room.timer_expires_at).getTime() : 0;
   if (!expiresAt || expiresAt > Date.now()) return { handled: false };
 
-  // A room timer ends topic discussion, not the entire room. The participants must still
-  // receive the final general-question vote before the room is allowed to complete. This is
-  // deliberately a direct state transition instead of calling resolvePoll(): resolving a
-  // topic poll here would start another live/ranking round and could create several polls at once.
-  const generalQuestion = getGeneralQuestionRow();
-  const generalTopicKey = normalizeTopicKey(generalQuestion?.topic || 'general-question');
-  const openPolls = db.prepare('SELECT * FROM polls WHERE room_id = ? AND is_closed = 0 ORDER BY id ASC').all(room.id);
-  const isGeneralPoll = (poll) => {
-    const suggestion = normalizeTopicKey(poll?.suggestion);
-    const question = normalizeTopicKey(poll?.question);
-    return suggestion === generalTopicKey
-      || suggestion === 'general-question'
-      || question === normalizeTopicKey(generalQuestion?.question_text);
-  };
-
-  // Make this handler one-shot before creating the final poll. On a restart or a concurrent
-  // timer sweep, the cleared timer prevents another transition from racing with this one.
-  db.prepare('UPDATE rooms SET timer_expires_at = NULL WHERE id = ?').run(room.id);
-
-  const closedAt = nowIso();
-  const closeTopicPoll = db.prepare(`
-    UPDATE polls
-    SET is_closed = 1,
-        closed_at = ?,
-        expires_at = COALESCE(expires_at, ?),
-        closed_reason = 'room_timer_expired',
-        review_until = NULL,
-        transitioned_to_poll_id = COALESCE(transitioned_to_poll_id, -1)
-    WHERE id = ? AND is_closed = 0
-  `);
-  for (const poll of openPolls) {
-    if (isGeneralPoll(poll)) continue;
-    closeTopicPoll.run(closedAt, closedAt, poll.id);
-    const topicKey = poll.suggestion || poll.question;
-    const current = db.prepare('SELECT topic_memory_json FROM rooms WHERE id = ?').get(room.id);
-    const entry = findConvergenceTopicEntry(parseRoomMemory(current), topicKey);
-    if (entry && !entry.is_general_question && String(entry.status || '').toLowerCase() !== 'resolved') {
-      upsertRoomMemoryEntry(room.id, topicKey, {
-        ...entry,
-        status: 'timed_out',
-        timer_expired: true,
-        decision: null,
-        summary: 'The room timer expired before this topic reached a decision.',
-        poll_id: poll.id,
-        updated_at: closedAt
-      });
-    }
+  // The room countdown is a discussion deadline, not permission to discard
+  // configured topics. Ballots have their own deadlines and must finish their
+  // swipe/live/ranking chain before the final question and convergence.
+  db.prepare('UPDATE rooms SET timer_expires_at = NULL, room_timer_expired_at = COALESCE(room_timer_expired_at, ?) WHERE id = ?').run(nowIso(), room.id);
+  createBotMessage(room.id, 'The discussion timer has ended. Voting on the remaining topics will continue; each vote keeps its own deadline.');
+  const pendingReviews = db.prepare(`
+    SELECT id FROM polls
+    WHERE room_id = ? AND poll_type = 'continuous' AND is_closed = 1
+      AND review_until IS NOT NULL AND transitioned_to_poll_id IS NULL
+  `).all(room.id);
+  for (const pending of pendingReviews) {
+    db.prepare('UPDATE polls SET review_until = ? WHERE id = ?').run(nowIso(), pending.id);
+    await finalizeContinuousReview(pending.id, room.id);
   }
-
-  // Mark every remaining non-final topic as timed out, including topics for which a poll had
-  // not yet been opened. This prevents the normal scheduler from reopening them after the timer.
-  const currentRoom = db.prepare('SELECT topic_memory_json FROM rooms WHERE id = ?').get(room.id);
-  for (const entry of parseRoomMemory(currentRoom)) {
-    if (entry.is_general_question || normalizeTopicKey(entry.key) === generalTopicKey) continue;
-    if (String(entry.status || '').toLowerCase() === 'resolved') continue;
-    upsertRoomMemoryEntry(room.id, entry.key || entry.question || entry.suggestion, {
-      ...entry,
-      status: 'timed_out',
-      timer_expired: true,
-      decision: null,
-      summary: entry.summary || 'The room timer expired before this topic reached a decision.',
-      updated_at: closedAt
-    });
-  }
-
-  const finalPoll = openPolls.find(isGeneralPoll)
-    || db.prepare('SELECT * FROM polls WHERE room_id = ? AND is_closed = 0 ORDER BY id DESC LIMIT 1').all(room.id).find(isGeneralPoll);
-  let created = 0;
-  if (!finalPoll) {
-    const finalQuestion = generalQuestion?.question_text || db.prepare('SELECT global_question FROM system_state WHERE id = 1').get()?.global_question || 'What is your view on the main question?';
-    createBotMessage(room.id, 'The discussion time is over, so the discussion of the individual topics is now closed. Please vote on the final question. You will move to the next room when the voting time is over or everyone has voted.');
-    const options = parsePredefinedAnswers(generalQuestion);
-    createMandatoryPoll(
-      room.id,
-      finalQuestion,
-      options.length >= 2 ? options : ['Yes', 'No', 'Abstained'],
-      'Group room timer expired; final question vote opened.',
-      generalQuestion?.topic || 'general-question',
-      null,
-      false,
-      'plurality',
-      'none'
-    );
-    created = 1;
-  } else {
-    createBotMessage(room.id, 'The discussion time is over. Please complete the final-question vote; the room will move on when voting closes or everyone has voted.');
-  }
-
-  emitPollsUpdated(room.id);
+  maybeScheduleNextPoll(room.id);
   emitDecisionStatus(ioRef);
-  logAgentEvent('agent3', 'Group room timer expired', `Room ${room.id}: closed topic discussion and opened the final question.`);
-  return { handled: true, created, finalPollAlreadyOpen: !!finalPoll };
+  logAgentEvent('agent3', 'Group room timer expired', `Room ${room.id}: preserving remaining topic votes before the final question.`);
+  return { handled: true };
 }
 
 async function sweepRoomTimers() {
@@ -3412,7 +3329,8 @@ export function createTopicPoll(roomId, activeTopic) {
   // deliberate fallback into a single-choice poll. Preserve that state instead
   // of restarting the same swipe round every time the scheduler runs.
   const isSingleSelectFallback = activeTopic.chain_stage === 'single_select';
-  let pType = isGen || isSingleSelectFallback ? 'plurality' : 'swipe';
+  let pType = isGen || isSingleSelectFallback ? 'plurality'
+    : activeTopic.chain_stage === 'ranking' ? 'ranking' : 'swipe';
   let pQuestion = activeTopic.question;
   let pOptions = activeTopic.options;
 
@@ -3433,7 +3351,7 @@ export function createTopicPoll(roomId, activeTopic) {
   }
 
   const suggestionKey = activeTopic.suggestion || activeTopic.key;
-  createMandatoryPoll(roomId, pQuestion, pOptions, 'Automatic topic transition poll.', suggestionKey, activeTopic.replaces_decided_option, true, pType, 'none');
+  createMandatoryPoll(roomId, pQuestion, pOptions, 'Automatic topic transition poll.', suggestionKey, activeTopic.replaces_decided_option, true, pType, pType === 'ranking' ? 'ranking' : 'none');
   
   if (ioRef) {
     ioRef.to(`room:${roomId}`).emit('polls_updated', { roomId });
@@ -3487,15 +3405,18 @@ async function handleTopicTransition(roomId, decisionText) {
         ? agreedList.map(item => `• ${item}`).join('\n')
         : '• None';
       
-      const recapMsg = `We've resolved all the previous topics. Here is a quick recap of the decisions we have taken so far:\n${agreedText}\n\nWhat needs to be still decided:\n• The final general question: "${questionText.replace(/\*\*/g, '')}"`;
+      const recapMsg = `We've worked through each discussion topic. Here's what you've decided:\n${agreedText}\n\nTake a moment to review these choices and discuss any final thoughts. Then we'll vote on the main question:\n\n${questionText}`;
       createBotMessage(roomId, recapMsg);
     } else {
-      createBotMessage(roomId, `We've resolved the previous topic. Let's move on and strictly discuss the next topic:\n\n${questionText}`);
+      createBotMessage(roomId, `That topic is settled. Next, let's talk about this question:\n\n${questionText}`);
     }
 
     localUpdateRoomStatusText(roomId, null, existingAgreed);
     emitDecisionStatus(ioRef);
 
+    const transitionDelayMs = isGen ? settingToFinalVoteMs() : settingToTimeBeforePollMs();
+    if (isGen) db.prepare('UPDATE rooms SET final_vote_not_before = ? WHERE id = ?')
+      .run(new Date(Date.now() + transitionDelayMs).toISOString(), roomId);
     // After the announcement (next topic, or the final recap), wait the admin-configured
     // "Time before poll" and then open the next poll automatically: a fresh swipe for the next
     // topic, or the plurality vote for the final general question. This is the single, predictable
@@ -3511,7 +3432,7 @@ async function handleTopicTransition(roomId, decisionText) {
       const nextNow = unresolvedNow[0];
       if (!nextNow) return;
       createTopicPoll(roomId, nextNow);
-    }, settingToTimeBeforePollMs());
+    }, transitionDelayMs).unref();
     return;
   }
 
@@ -3596,7 +3517,7 @@ export async function resolvePoll(pollId, roomId) {
   logAgentEvent('agent3', 'Closed poll', `Poll ${pollId} closed in room ${roomId}.`);
   emitPollsUpdated(roomId);
 
-  const room = db.prepare('SELECT room_type, topic_memory_json FROM rooms WHERE id = ?').get(roomId);
+  const room = db.prepare('SELECT room_type, topic_memory_json, final_vote_not_before FROM rooms WHERE id = ?').get(roomId);
   // A closed poll is the boundary after which a quiet-room nudge may become
   // eligible again. Re-arm it here instead of waiting for a later user message
   // or relying only on the periodic sweep.
@@ -3697,6 +3618,24 @@ export async function resolvePoll(pollId, roomId) {
         emitDecisionStatus(ioRef);
       }
       return;
+    }
+
+    const gatheringQuestion = getRequiredDeliberationQuestions().find((question) => question.question_text === poll.question && question.topic === poll.suggestion);
+    if (gatheringQuestion) {
+      const responses = db.prepare(`SELECT pv.user_id, po.option_text, pv.custom_option_text
+        FROM poll_votes pv JOIN poll_options po ON po.id = pv.option_id
+        JOIN users u ON u.id = pv.user_id AND u.is_admin = 0 WHERE pv.poll_id = ?`).all(pollId);
+      for (const response of responses) {
+        const answer = response.custom_option_text?.trim() || response.option_text;
+        db.prepare(`INSERT INTO gathering_answers(question_id, user_id, answer_text, raw_answer_text, matched_predefined_answer, answer_source, response_status, created_at)
+          VALUES (?, ?, ?, ?, ?, 'poll', 'accepted', ?)
+          ON CONFLICT(question_id, user_id) DO UPDATE SET answer_text = excluded.answer_text,
+          raw_answer_text = excluded.raw_answer_text, matched_predefined_answer = excluded.matched_predefined_answer,
+          answer_source = 'poll', response_status = 'accepted', created_at = excluded.created_at`)
+          .run(gatheringQuestion.id, response.user_id, answer, answer, response.custom_option_text ? '' : response.option_text, nowIso());
+      }
+      const next = getNextNonGeneralGatheringQuestionAfter(gatheringQuestion.id);
+      db.prepare('UPDATE rooms SET current_gathering_question_id = ?, gathering_retry_count = 0 WHERE id = ?').run(next?.id || null, roomId);
     }
 
     const nonVoters = db
@@ -3976,6 +3915,17 @@ export async function resolvePoll(pollId, roomId) {
       .all(pollId);
   }
 
+  if (poll.poll_type === 'swipe') {
+    const writeIns = db.prepare(`SELECT TRIM(custom_option_text) AS option_text, COUNT(DISTINCT user_id) AS votes
+      FROM poll_votes WHERE poll_id = ? AND custom_option_text IS NOT NULL AND TRIM(custom_option_text) != ''
+      GROUP BY TRIM(custom_option_text)`).all(pollId);
+    rows = rows.filter((row) => String(row.option_text).trim().toLowerCase() !== 'other');
+    for (const writeIn of writeIns) {
+      const existing = rows.find((row) => continuousAnnouncementKey(row.option_text) === continuousAnnouncementKey(writeIn.option_text));
+      if (existing) existing.votes = Math.max(existing.votes, writeIn.votes);
+      else rows.push(writeIn);
+    }
+  }
   if (!rows.length) return;
 
   let resultsText = replaceOtherInRows(rows, pollId).map((r) => `${r.option_text}: ${r.votes}`).join('; ');
@@ -3991,7 +3941,7 @@ export async function resolvePoll(pollId, roomId) {
       summary: resultsText, chain_stage: null, updated_at: nowIso()
     });
     db.prepare("UPDATE polls SET chain_stage = 'none' WHERE id = ?").run(pollId);
-        createBotMessage(roomId, `The group agreed on: **${rows[0].option_text}** for "${poll.suggestion || poll.question}".`);
+        createBotMessage(roomId, `For **${poll.suggestion || poll.question}**, the group chose: **${rows[0].option_text}**.`);
     localUpdateRoomStatusText(roomId, "Agreed on: " + rows[0].option_text);
     emitDecisionStatus(ioRef);
     return;
@@ -4029,7 +3979,7 @@ export async function resolvePoll(pollId, roomId) {
       });
       db.prepare("UPDATE polls SET has_consensus = 1, chain_stage = 'none' WHERE id = ?").run(pollId);
       const unanimous = topApprovedVotes >= memberCount;
-      createBotMessage(roomId, `${unanimous ? 'Everyone agreed on' : 'The group agreed on'}: **${decisionText}** for "${poll.suggestion || poll.question}".`);
+      createBotMessage(roomId, `For **${poll.suggestion || poll.question}**, ${unanimous ? 'everyone agreed on' : 'the group chose'}: **${decisionText}**.`);
       await handleTopicTransition(roomId, decisionText);
       return;
     }
@@ -4562,6 +4512,7 @@ async function checkGroupRoomForPoll(roomId) {
   const lastBotAnnouncementIndex = transcript.map(m => m.sender_name === 'Bot' && (
     m.text.includes('mandatory poll') ||
     m.text.includes('we agreed on:') ||
+    /^For \*\*/.test(m.text) ||
     m.text.includes('agreement was reached on:') ||
     m.text.includes('Discussion reopened')
   )).lastIndexOf(true);
@@ -4783,7 +4734,13 @@ export function getConvergenceSummaryData(round = 1) {
     return { roomName: r.name, decision: d ? d.decision_text : 'No decision' };
   });
 
-  const topicsMap = {};
+  const topicsMap = Object.fromEntries(getRequiredDeliberationQuestions().map((q) => [q.topic, {
+    question: q.question_text,
+    resolutions: [],
+    assignedRooms: 0,
+    options: parsePredefinedAnswers(q),
+    is_general_question: false
+  }]));
   for (const room of groupRooms) {
     let memory = [];
     try { memory = JSON.parse(room.topic_memory_json || '[]'); } catch (e) {}
@@ -4792,9 +4749,12 @@ export function getConvergenceSummaryData(round = 1) {
         topicsMap[entry.key] = {
            question: entry.question,
            resolutions: [],
+           assignedRooms: 0,
+           options: entry.options || [],
            is_general_question: entry.is_general_question
         };
       }
+      topicsMap[entry.key].assignedRooms += 1;
       // Use the actual DECISION reached (not the topic key stored in `suggestion`).
       const decisionText = entry.decision || entry.summary || null;
       if (entry.status === 'resolved' && decisionText) {
@@ -4810,7 +4770,12 @@ export function getConvergenceSummaryData(round = 1) {
   const summary = [];
   for (const [key, data] of Object.entries(topicsMap)) {
     if (data.is_general_question) continue; // Skip general question from the topics list
-    if (data.resolutions.length === 0) continue; // No room resolved this topic; nothing to summarize
+    if (data.resolutions.length === 0 || data.resolutions.length < data.assignedRooms) {
+      summary.push({ key, question: data.question, status: 'open',
+        options: [...new Set([...data.resolutions.map((r) => r.decision), ...data.options])],
+        reason: 'Not all assigned groups reached a decision. This topic still needs discussion and voting.' });
+      continue;
+    }
 
     // Collapse to the distinct decisions actually chosen (case-insensitive), keeping first-seen casing.
     const seen = new Map();
@@ -5374,6 +5339,11 @@ export function finalizeConvergenceReviewWindow(roomId) {
   // poll automatically — the swipe on the first reopened/open topic, or (if everything was
   // already agreed) the final general-question vote. Without this the convergence room used to
   // rely on the old readiness scheduler and could sit doing nothing.
+  const firstTopic = getUnresolvedRoomMemoryTopics(roomId)[0];
+  const firstIsFinal = !!firstTopic?.is_general_question || normalizeTopicKey(firstTopic?.key) === 'general-question';
+  const transitionDelayMs = firstIsFinal ? settingToFinalVoteMs() : settingToTimeBeforePollMs();
+  if (firstIsFinal) db.prepare('UPDATE rooms SET final_vote_not_before = ? WHERE id = ?')
+    .run(new Date(Date.now() + transitionDelayMs).toISOString(), roomId);
   const previousTimer = convergenceReviewTimers.get(roomId);
   if (previousTimer) clearTimeout(previousTimer);
   const reviewTimer = setTimeout(() => {
@@ -5384,7 +5354,7 @@ export function finalizeConvergenceReviewWindow(roomId) {
     const nextNow = getUnresolvedRoomMemoryTopics(roomId)[0];
     if (!nextNow) return;
     createTopicPoll(roomId, nextNow);
-  }, settingToTimeBeforePollMs());
+  }, transitionDelayMs).unref();
   convergenceReviewTimers.set(roomId, reviewTimer);
 }
 
@@ -5421,7 +5391,7 @@ function sweepConvergenceReviewWindows() {
 // the next poll purely from persisted state once the delay has elapsed, so nothing gets stuck.
 export function recoverStuckTopicPolls() {
   const rooms = db.prepare(`
-    SELECT id, room_type, convergence_finalized, convergence_summary_at
+    SELECT id, room_type, convergence_finalized, convergence_summary_at, final_vote_not_before
     FROM rooms
     WHERE room_type IN ('group', 'convergence') AND is_active = 1 AND collection_complete = 0
   `).all();
@@ -5452,11 +5422,16 @@ export function recoverStuckTopicPolls() {
       // Finalization happens at summary_at + review window; the poll opens after that + delay.
       referenceMs = new Date(room.convergence_summary_at).getTime() + getConvergenceReviewWindowMs();
     } else {
-      const lastClosed = db.prepare('SELECT closed_at, created_at FROM polls WHERE room_id = ? AND is_closed = 1 ORDER BY id DESC LIMIT 1').get(room.id);
-      if (!lastClosed) continue; // No prior poll -> the initial group swipe path handles the first poll.
-      referenceMs = new Date(lastClosed.closed_at || lastClosed.created_at).getTime();
+      referenceMs = 0;
     }
-    if (Number.isNaN(referenceMs) || Date.now() < referenceMs + timeBeforePollMs) continue;
+    const lastClosed = db.prepare('SELECT closed_at, created_at FROM polls WHERE room_id = ? AND is_closed = 1 ORDER BY id DESC LIMIT 1').get(room.id);
+    if (lastClosed) referenceMs = Math.max(referenceMs, new Date(lastClosed.closed_at || lastClosed.created_at).getTime());
+    if (!referenceMs) continue; // Initial group swipe is handled at room creation.
+    const isFinal = !!nextTopic.is_general_question || normalizeTopicKey(nextTopic.key) === 'general-question';
+    const dueMs = isFinal && room.final_vote_not_before
+      ? new Date(room.final_vote_not_before).getTime()
+      : referenceMs + (isFinal ? settingToFinalVoteMs() : timeBeforePollMs);
+    if (Number.isNaN(dueMs) || Date.now() < dueMs) continue;
 
     try {
       createTopicPoll(room.id, nextTopic);
@@ -5466,8 +5441,33 @@ export function recoverStuckTopicPolls() {
   }
 }
 
+export function refreshConvergenceSummaries() {
+  for (const room of db.prepare("SELECT id, decision_round FROM rooms WHERE room_type = 'convergence' AND is_active = 1").all()) {
+    const summary = getConvergenceSummaryData(room.decision_round - 1);
+    db.prepare("UPDATE messages SET text = ? WHERE room_id = ? AND text LIKE '[ConvergenceSummary=%'")
+      .run(`[ConvergenceSummary=${JSON.stringify(summary)}]`, room.id);
+  }
+}
+
 export function initAgent3(io) {
   ioRef = io;
+  refreshConvergenceSummaries();
+  const recoverFinalReports = () => {
+    if (db.prepare("SELECT current_phase FROM system_state WHERE id = 1").get()?.current_phase !== 'completed') return;
+    const pending = db.prepare(`
+      SELECT id FROM rooms
+      WHERE room_type = 'convergence' AND decision_round >= 2
+        AND is_active = 0 AND collection_complete = 0
+        AND (recap_report IS NULL OR TRIM(recap_report) = '')
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    if (pending) generateAndEmitFinalReport(pending.id);
+  };
+  setTimeout(recoverFinalReports, 0);
+  setInterval(recoverFinalReports, 10000);
+  if (db.prepare('SELECT current_phase FROM system_state WHERE id = 1').get()?.current_phase === 'gathering') {
+    for (const room of db.prepare("SELECT id FROM rooms WHERE room_type = 'personal' AND is_active = 1 AND collection_complete = 0").all()) repairPersonalPollSequence(room.id);
+  }
   setTimeout(() => {
     try {
       recoverStalledFinalPolls();
@@ -5777,49 +5777,53 @@ export async function forceShowdown() {
   }
 }
 
-export async function handleTieProCon(roomId, tiedOptions) {
-  if (!client) return;
+export async function handleTieProCon(roomId, tiedOptions, pollId = null) {
+  const poll = pollId ? db.prepare('SELECT * FROM polls WHERE id = ? AND room_id = ?').get(pollId, roomId) : null;
+  const stillRelevant = () => {
+    if (!pollId) return true;
+    const current = db.prepare('SELECT is_closed, expires_at FROM polls WHERE id = ?').get(pollId);
+    if (!current || current.is_closed || (current.expires_at && current.expires_at <= nowIso())) return false;
+    const leaders = getContinuousGroupedLeaders(pollId);
+    const tied = leaders.filter((entry) => entry.votes === leaders[0]?.votes).map((entry) => normalizeLiveOption(entry.label));
+    return tiedOptions.every((label) => tied.includes(normalizeLiveOption(label))) && tied.length > 1;
+  };
+  if (!stillRelevant()) return;
+  const fallback = () => {
+    if (stillRelevant()) createBotMessage(roomId, `The positions favour ${tiedOptions.map((option) => `**${option}**`).join(' or ')}. What is essential to each position, and which part could you combine or adjust to reach a shared choice?`);
+  };
+  if (!client) { fallback(); return; }
   try {
     const state = db.prepare('SELECT decision_context, general_description FROM system_state WHERE id = 1').get();
-    const decision_context = state?.decision_context || '';
-    const general_description = state?.general_description || '';
-
-    const systemPrompt = renderTemplate('agent3-templates.md#Tie Pro Con System');
-    const userPrompt = renderTemplate('agent3-templates.md#Tie Pro Con User', {
-      tied_options: tiedOptions.map(opt => `- "${opt}"`).join('\n'),
-      general_description,
-      decision_context
-    });
-
+    const options = pollId ? db.prepare('SELECT id, option_text FROM poll_options WHERE poll_id = ?').all(pollId).filter((option) => !['other', 'keep discussing'].includes(normalizeLiveOption(option.option_text))) : [];
+    const discussion = db.prepare(`SELECT m.text FROM messages m JOIN users u ON u.id = m.sender_id
+      WHERE m.room_id = ? AND u.is_admin = 0 ORDER BY m.id DESC LIMIT 20`).all(roomId).reverse().map((message) => message.text);
     const response = await client.chat.completions.create({
       model: getConfiguredModels().primaryModel,
       temperature: 0.1,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
+        { role: 'system', content: `Help a group discuss tied positions neutrally. Return JSON with message (string), existing_option_id (number or null), proposed_option (string or null). The message must be ONE concise sentence, at most 20 words; the application may add one short sentence identifying an option, so keep the whole post to at most 2 sentences. First check carefully whether tied options are semantic duplicates or paraphrases with the same practical meaning (for example, "poor people" and "low-income residents"). If so, point to the clearer existing option using existing_option_id and do not create a new compromise. Do not treat options as duplicates if a meaningful eligibility condition, income threshold, funding source, or policy scope differs. Otherwise, briefly name the key trade-off and look for an available option that genuinely bridges it. Use recorded arguments when available; do not invent facts. Propose at most one feasible compromise only when no existing equivalent or bridge option exists. If none is sound, leave proposed_option null and ask one focused question. Proposed options must be 3–240 characters. ${pollId ? 'Live voting is open. A proposed option may be added only if a participant chooses it.' : 'The vote has ended; leave proposed_option null.'}` },
+        { role: 'user', content: JSON.stringify({ question: poll?.question, tied_options: tiedOptions, available_options: options, context: state, participant_discussion: discussion }) }
       ],
       metadata: { roomId, caller: 'agent3-handleTieProCon' }
     });
-
-    const content = response.choices?.[0]?.message?.content || '{}';
-    const parsed = JSON.parse(content);
-    if (parsed && typeof parsed.message === 'string' && parsed.message.trim() !== '') {
-      const messageText = parsed.message.trim();
-      const lowerMsg = messageText.toLowerCase();
-      if (
-        !lowerMsg.includes('does not mention') &&
-        !lowerMsg.includes('no specific arguments') &&
-        !lowerMsg.includes('not mentioned') &&
-        !lowerMsg.includes('is not mentioned') &&
-        !lowerMsg.includes('no information') &&
-        !lowerMsg.includes('not discuss')
-      ) {
-        createBotMessage(roomId, messageText);
-      }
+    const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
+    if (!stillRelevant()) return;
+    if (typeof parsed.message !== 'string' || !parsed.message.trim()) { fallback(); return; }
+    let message = parsed.message.trim().split(/\s+/).slice(0, 20).join(' ');
+    const firstSentenceEnd = message.search(/[.!?](?=\s|$)/);
+    if (firstSentenceEnd >= 0) message = message.slice(0, firstSentenceEnd + 1);
+    else message = `${message.replace(/[.!?]+$/, '')}.`;
+    const proposed = typeof parsed.proposed_option === 'string' ? parsed.proposed_option.trim() : '';
+    const available = options.find((option) => option.id === parsed.existing_option_id || normalizeLiveOption(option.option_text) === normalizeLiveOption(proposed));
+    if (available) message += `\n\nYou can consider the available option **${available.option_text}** in the live vote.`;
+    else if (pollId && proposed.length >= 3 && proposed.length <= 240) {
+      message += `\n\nSuggested common ground: **${proposed}**.\n[LiveVoteProposal=${JSON.stringify({ pollId, optionText: proposed })}]`;
     }
-  } catch (err) {
-    console.error('Failed to generate tie pro-con message:', err);
+    createBotMessage(roomId, message);
+  } catch (error) {
+    console.error('Failed to generate tie discussion:', error);
+    fallback();
   }
 }
 
@@ -6312,7 +6316,7 @@ export async function generateRoomAnalysisReport(roomId) {
 
   if (topicDataForLLM.length === 0) {
     const defaultMsg = "No decisions have been recorded for this room yet.";
-    db.prepare('UPDATE rooms SET recap_report = ? WHERE id = ?').run(defaultMsg, roomId);
+    db.prepare("UPDATE rooms SET recap_report = ?, collection_complete = CASE WHEN room_type = 'convergence' THEN 1 ELSE collection_complete END, timer_expires_at = NULL WHERE id = ?").run(defaultMsg, roomId);
     return defaultMsg;
   }
 
@@ -6334,11 +6338,12 @@ export async function generateRoomAnalysisReport(roomId) {
       }
       report += `\n`;
     }
+    db.prepare("UPDATE rooms SET recap_report = ?, collection_complete = CASE WHEN room_type = 'convergence' THEN 1 ELSE collection_complete END, timer_expires_at = NULL WHERE id = ?").run(report, roomId);
     return report;
   }
 
   const isPreliminary = room.room_type === 'group';
-  const prompt = `You are a professional analysis assistant. Your task is to write a ${isPreliminary ? 'brief, concise results summary for one discussion group' : 'comprehensive, written narrative analysis report of the ENTIRE collaborative decision-making process'}.
+  const prompt = `You are a professional analysis assistant. Your task is to write a ${isPreliminary ? 'brief, concise results summary for one discussion group' : 'concise, evidence-based report of the collaborative decision-making process'}.
 ${isPreliminary ? 'This shows only the results for this single discussion group room. Keep it short, concise, and direct.' : 'The report must cover EVERY topic in the data — including topics that were decided earlier in the discussion groups (marked "decided_in_discussion_groups": true) and pre-agreed at the start of the final round, as well as any topics voted on in the final round. Use the explicit "decision_provenance" field as the source of truth: do not infer or blur whether a topic was carried forward from a subset discussion group or re-voted by the full final-room group. Describe with words whether participants really approved each outcome, analyze the level of consensus, and assess compatibility/co-implementation of the top options.'}
 
 Decision Context:
@@ -6360,26 +6365,50 @@ ${isPreliminary ? `1. Write a brief, concise results summary in Markdown format.
    - Present the topic and its final decision.
    - Explicitly report the exact "decision_provenance" in natural language. Distinguish between a topic decided by a subset in the discussion groups and merely approved during the final review, versus a topic discussed and voted again by the full final-room group.
    - List the top options (at least the top 2; if the top 2 got less than 50% combined, list the top 3 options). For each option, clearly report its votes/scores and percentage. Do NOT truncate option names.
-   - Write a detailed analysis of the consensus reached. Explain if the participants really approve the outcome (e.g. if 90%+ support it, say they overwhelmingly lean towards it; if it is a narrow majority or a tie, explain that the group is split or has slight preference).
+   - Briefly explain the level of agreement. Explain if the participants really approve the outcome (e.g. if 90%+ support it, say they overwhelmingly lean towards it; if it is a narrow majority or a tie, explain that the group is split or has slight preference).
    - Assess compatibility of the top options. Describe in words if the top options are complementary/compatible and can be implemented together, or if they represent an either/or trade-off (conflict).
 5. For the General Question / Global Proposal (the "is_general_question": true entry):
    - Analyze the voting results. Discuss if the users approve the outcome, the arguments for/against based on the consensus levels, and what this means for the global proposal. Use the actual question text as the section title instead of "General Question".
-6. Keep the report formal, analytical, and well-written. Do NOT present simple raw tables or lists of winners, but instead a narrative essay-like report that integrates the vote data into the paragraphs.
-7. Provide a summary section at the end detailing the overall health of the collaboration and key takeaways.`}`;
+6. Keep the report clear and compact. Use short sections, bullets, or a compact results table rather than an essay. Never infer arguments or collaboration quality from vote counts alone. Do not repeat the background or the same result in several sections.
+7. End with at most two sentences summarizing the result and any unresolved issues.
+8. Scale detail to the recorded participant discussion: ${db.prepare("SELECT COUNT(*) AS c FROM messages m JOIN rooms r ON r.id = m.room_id JOIN users u ON u.id = m.sender_id WHERE u.is_admin = 0 AND r.room_type IN ('group', 'convergence')").get()?.c || 0} participant messages were recorded. With fewer than 10 messages, aim for 150–300 words plus one short result entry per topic; with more discussion, aim for 300–600 words. Cover every topic and its provenance, but avoid padding. Only describe arguments actually supplied in the data.`}`;
 
   try {
     const response = await client.chat.completions.create({
       model: env.cheapModel,
       messages: [{ role: 'user', content: prompt }],
-      metadata: { roomId, caller: 'agent3-recap' }
+      metadata: { roomId, caller: 'agent3-recap' },
+      timeout: 60_000
     });
     const reportText = response.choices?.[0]?.message?.content || 'No report generated.';
     
     // Store in DB
-    db.prepare('UPDATE rooms SET recap_report = ? WHERE id = ?').run(reportText, roomId);
+    db.prepare("UPDATE rooms SET recap_report = ?, collection_complete = CASE WHEN room_type = 'convergence' THEN 1 ELSE collection_complete END, timer_expires_at = NULL WHERE id = ?").run(reportText, roomId);
     return reportText;
   } catch (err) {
     console.error('Error generating room analysis report:', err);
-    return "Error generating analysis report: " + err.message;
+    const fallbackReport = `# Final Analysis Report\n\n**Global question:** ${state?.global_question || 'Not recorded'}\n\n${topicDataForLLM.map((topic) => `## ${topic.topic}\n**Decision:** ${topic.decision}\n**Decision provenance:** ${topic.decision_provenance || 'Not recorded'}\n${(topic.options || []).map((option) => `- ${option.text}: ${option.scoreOrVotes} (${option.percentage}%)`).join('\n') || 'No vote totals recorded.'}`).join('\n\n')}\n\nThis report uses the recorded decisions and vote totals; narrative analysis could not be generated.`;
+    db.prepare("UPDATE rooms SET recap_report = ?, collection_complete = CASE WHEN room_type = 'convergence' THEN 1 ELSE collection_complete END, timer_expires_at = NULL WHERE id = ?").run(fallbackReport, roomId);
+    return fallbackReport;
+  }
+}
+
+async function generateAndEmitFinalReport(roomId) {
+  if (finalReportLocks.has(roomId)) return null;
+  finalReportLocks.add(roomId);
+  const reportWork = createDecisionWorkContext({ workType: 'final-report', allowCompleted: true });
+  try {
+    return await runWithWorkContext(reportWork, async () => {
+      throwIfWorkCancelled();
+      const report = await generateRoomAnalysisReport(roomId);
+      throwIfWorkCancelled();
+      if (report && ioRef) ioRef.emit('convergence_completed', { roomId, report, collection_complete: true });
+      return report;
+    });
+  } catch (err) {
+    if (err.name !== 'AbortError') console.error('Failed to emit convergence completed report:', err.message);
+    return null;
+  } finally {
+    finalReportLocks.delete(roomId);
   }
 }

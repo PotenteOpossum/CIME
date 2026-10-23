@@ -7,9 +7,9 @@ export function createQualityPolling({ request, statisticsUrl, onData, onError, 
   let pending = null;
   const controller = new AbortController();
 
-  function refresh(force = false) {
+  function refresh(force = false, compute = null) {
     if (disposed) return Promise.resolve();
-    if (pending) return pending;
+    if (pending) return compute ? pending.then(() => refresh(force, compute)) : pending;
     pending = Promise.resolve().then(async () => {
       if (disposed) return;
       if (force || !hasStats) onLoading(true);
@@ -24,12 +24,12 @@ export function createQualityPolling({ request, statisticsUrl, onData, onError, 
         if (disposed) return;
         const changed = count !== null && (lastMessageCount === null || count < lastMessageCount || count - lastMessageCount >= 5);
         if (force || !hasStats || changed) {
-          const data = await request(statisticsUrl, { signal: controller.signal });
+          const data = await request(compute ? `${statisticsUrl}${statisticsUrl.includes("?") ? "&" : "?"}compute=${encodeURIComponent(compute)}` : statisticsUrl, { signal: controller.signal });
           if (disposed) return;
           hasStats = true;
           lastMessageCount = count;
           onData(data);
-          onError(null);
+          onError(data.analysisError || null);
         }
       } catch (error) {
         if (!disposed) onError(error.message || 'Failed to fetch statistics');

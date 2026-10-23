@@ -29,10 +29,11 @@ const defaultSettings = {
   poll_timer_minutes: 2,
   convergence_summary_minutes: 1,
   time_before_poll_seconds: 10,
+  time_before_final_vote_seconds: null,
   check_response_validity: false,
-  clustering_strategy: 'mixed',
+  clustering_strategy: 'topic_preference',
   clustering_min_users_per_room: 2,
-  clustering_min_rooms: 1,
+  clustering_min_rooms: 2,
   kick_out_no_voters: 2,
   user_poll_rate_limit: 11,
   user_inactivity_timeout_minutes: 5,
@@ -79,7 +80,7 @@ function clampPositiveInt(value, fallback, min = 1, max = 50) {
 }
 
 function normalizeClusteringStrategy(value) {
-  return ['random', 'homophilic', 'heterophilic', 'mixed', 'topic_preference'].includes(value) ? value : 'mixed';
+  return ['random', 'homophilic', 'heterophilic', 'mixed', 'topic_preference'].includes(value) ? value : 'topic_preference';
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -147,10 +148,11 @@ export function getDecisionSettings() {
     poll_timer_minutes: clampPositiveInt(merged.poll_timer_minutes, 2, 1, 30),
     convergence_summary_minutes: clampPositiveInt(merged.convergence_summary_minutes, 1, 1, 10),
     time_before_poll_seconds: clampPositiveInt(merged.time_before_poll_seconds, 10, 0, 120),
+    time_before_final_vote_seconds: clampPositiveInt(merged.time_before_final_vote_seconds ?? merged.time_before_poll_seconds, 10, 0, 1800),
     check_response_validity: normalizeBoolean(merged.check_response_validity, false),
     clustering_strategy: normalizeClusteringStrategy(merged.clustering_strategy),
     clustering_min_users_per_room: clampPositiveInt(merged.clustering_min_users_per_room, 2, 2, 50),
-    clustering_min_rooms: clampPositiveInt(merged.clustering_min_rooms, 1, 1, 50),
+    clustering_min_rooms: clampPositiveInt(merged.clustering_min_rooms, 2, 1, 50),
     kick_out_no_voters: clampPositiveInt(merged.kick_out_no_voters, 2, 1, 2),
     user_poll_rate_limit: clampPositiveInt(merged.user_poll_rate_limit, 11, 0, 11),
     user_inactivity_timeout_minutes: clampPositiveInt(merged.user_inactivity_timeout_minutes, 5, 3, 15),
@@ -166,6 +168,7 @@ export function updateDecisionSettings(patch) {
   if (patch.room_timer_minutes !== undefined) next.room_timer_minutes = clampPositiveInt(patch.room_timer_minutes, 3, 1, 30);
   if (patch.poll_timer_minutes !== undefined) next.poll_timer_minutes = clampPositiveInt(patch.poll_timer_minutes, 2, 1, 30);
   if (patch.convergence_summary_minutes !== undefined) next.convergence_summary_minutes = clampPositiveInt(patch.convergence_summary_minutes, 1, 1, 10);
+  if (patch.time_before_final_vote_seconds !== undefined) next.time_before_final_vote_seconds = clampPositiveInt(patch.time_before_final_vote_seconds, 10, 0, 1800);
   if (patch.time_before_poll_seconds !== undefined) next.time_before_poll_seconds = clampPositiveInt(patch.time_before_poll_seconds, 10, 0, 120);
   if (patch.check_response_validity !== undefined) next.check_response_validity = normalizeBoolean(patch.check_response_validity, false);
   if (patch.consensus_sensitivity !== undefined) next.consensus_sensitivity = clampConsensusSensitivity(patch.consensus_sensitivity);
@@ -281,6 +284,10 @@ export function settingToNudgeDelayMs(settings = getDecisionSettings()) {
 export function settingToTimeBeforePollMs(settings = getDecisionSettings()) {
   const seconds = Number(settings.time_before_poll_seconds);
   return (Number.isFinite(seconds) ? Math.max(0, seconds) : 10) * 1000;
+}
+
+export function settingToFinalVoteMs(settings = getDecisionSettings()) {
+  return Math.max(0, Number(settings.time_before_final_vote_seconds ?? settings.time_before_poll_seconds) || 0) * 1000;
 }
 
 export function settingToRoomTimerMinutes(settings = getDecisionSettings()) {

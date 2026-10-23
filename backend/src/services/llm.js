@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { withModelBudget } from '../platform/modelBudget.js';
 import { env } from '../config/env.js';
 import { db } from '../config/db.js';
 import { getWorkContext, throwIfWorkCancelled } from './workContext.js';
@@ -49,7 +50,7 @@ export function createLoggedLlmClient(provider) {
         }
 
         const sessionUsage = usageDetails({}, metadata);
-        const response = await provider.chat.completions.create(normalizeChatCompletionParams(openaiParams));
+        const response = await withModelBudget(() => provider.chat.completions.create(normalizeChatCompletionParams(openaiParams), { signal: getWorkContext()?.signal }));
         
         try {
           let prompt = '';
@@ -103,7 +104,7 @@ export function createLoggedLlmClient(provider) {
       }
 
       const sessionUsage = usageDetails({}, metadata);
-      const response = await provider.embeddings.create(openaiParams);
+      const response = await withModelBudget(() => provider.embeddings.create(openaiParams, { signal: getWorkContext()?.signal }));
 
       try {
         const caller = metadata?.caller || 'unknown';

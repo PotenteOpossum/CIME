@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
+import { runId, storage, transientStorage } from '../platform/context.js';
+import { useEffect, useMemo, useRef, useState, Fragment, lazy, Suspense } from 'react';
 import { io } from 'socket.io-client';
 import { apiRequest } from '../api/client.js';
 import { useAdminAuth } from '../contexts/AdminAuthContext.jsx';
 import cimeLogo from '../img/CIME_LOGO.png';
 import { wikiDocs } from '../docs/wikiContent.js';
-import QualityTab from '../components/QualityTab.jsx';
-import SimulationTab from '../components/SimulationTab.jsx';
 import { decisionSettingsToJson, parseDecisionSettingsJson } from '../utils/adminJsonConfig.js';
 import { decisionDraftFromServer, hasDecisionDraft } from '../utils/decisionDraft.js';
+import SurveysTab from '../components/SurveysTab.jsx';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
-const MENU = ['decision', 'settings', 'users', 'rooms', 'polls', 'quality', 'simulation', 'documentation', 'database', 'llm logs'];
+const SimulationTab = lazy(() => import('../components/SimulationTab.jsx'));
+
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+const MENU = ['decision', 'surveys', 'settings', 'rooms', 'polls', 'simulation', 'documentation', 'llm logs'];
 
 export default function AdminDashboard() {
   const { token, user, logout } = useAdminAuth();
@@ -23,12 +25,12 @@ export default function AdminDashboard() {
   const [newPoll, setNewPoll] = useState({ question: '', options: ['', ''], mandatory: false, timer_minutes: '' });
   const [decisionAgentChat, setDecisionAgentChat] = useState([]);
   const [decision, setDecision] = useState({ global_question: '', decision_context: '', current_phase: 'idle', discussion_round: 0, phase1: { completed: 0, total: 0 }, deliberation_questions: [], settings: {} });
-  const [globalQuestion, setGlobalQuestion] = useState(() => localStorage.getItem('cime_draft_global_question') || '');
-  const [decisionContext, setDecisionContext] = useState(() => localStorage.getItem('cime_draft_decision_context') || '');
-  const [generalDescription, setGeneralDescription] = useState(() => localStorage.getItem('cime_draft_general_description') || '');
+  const [globalQuestion, setGlobalQuestion] = useState(() => storage.getItem('cime_draft_global_question') || '');
+  const [decisionContext, setDecisionContext] = useState(() => storage.getItem('cime_draft_decision_context') || '');
+  const [generalDescription, setGeneralDescription] = useState(() => storage.getItem('cime_draft_general_description') || '');
   const [deliberationQuestions, setDeliberationQuestions] = useState(() => {
     try {
-      const saved = localStorage.getItem('cime_draft_deliberation_questions');
+      const saved = storage.getItem('cime_draft_deliberation_questions');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -38,7 +40,7 @@ export default function AdminDashboard() {
   // fewer than two remain, the backend falls back to a default openness scale.
   const [generalQuestionAnswers, setGeneralQuestionAnswers] = useState(() => {
     try {
-      const saved = localStorage.getItem('cime_draft_general_question_answers');
+      const saved = storage.getItem('cime_draft_general_question_answers');
       return saved ? JSON.parse(saved) : ['', ''];
     } catch {
       return ['', ''];
@@ -46,7 +48,7 @@ export default function AdminDashboard() {
   });
   const [cachedUsers, setCachedUsers] = useState(() => {
     try {
-      const saved = localStorage.getItem('admin_users_cache') || sessionStorage.getItem('admin_users_cache');
+      const saved = storage.getItem('admin_users_cache') || transientStorage.getItem('admin_users_cache');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -54,7 +56,7 @@ export default function AdminDashboard() {
   });
   const [cachedRooms, setCachedRooms] = useState(() => {
     try {
-      const saved = localStorage.getItem('admin_rooms_cache') || sessionStorage.getItem('admin_rooms_cache');
+      const saved = storage.getItem('admin_rooms_cache') || transientStorage.getItem('admin_rooms_cache');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -62,32 +64,32 @@ export default function AdminDashboard() {
   });
 
   useEffect(() => {
-    localStorage.setItem('cime_draft_global_question', globalQuestion || '');
-    localStorage.setItem('cime_draft_decision_context', decisionContext || '');
-    localStorage.setItem('cime_draft_general_description', generalDescription || '');
-    localStorage.setItem('cime_draft_deliberation_questions', JSON.stringify(deliberationQuestions || []));
-    localStorage.setItem('cime_draft_general_question_answers', JSON.stringify(generalQuestionAnswers || []));
+    storage.setItem('cime_draft_global_question', globalQuestion || '');
+    storage.setItem('cime_draft_decision_context', decisionContext || '');
+    storage.setItem('cime_draft_general_description', generalDescription || '');
+    storage.setItem('cime_draft_deliberation_questions', JSON.stringify(deliberationQuestions || []));
+    storage.setItem('cime_draft_general_question_answers', JSON.stringify(generalQuestionAnswers || []));
   }, [globalQuestion, decisionContext, generalDescription, deliberationQuestions, generalQuestionAnswers]);
 
   useEffect(() => {
     if ((users || []).length > 0) {
       try {
-        localStorage.setItem('admin_users_cache', JSON.stringify(users));
+        storage.setItem('admin_users_cache', JSON.stringify(users));
       } catch {
         // Ignore storage failures.
       }
-      sessionStorage.setItem('admin_users_cache', JSON.stringify(users));
+      transientStorage.setItem('admin_users_cache', JSON.stringify(users));
     }
   }, [users]);
 
   useEffect(() => {
     if ((rooms || []).length > 0) {
       try {
-        localStorage.setItem('admin_rooms_cache', JSON.stringify(rooms));
+        storage.setItem('admin_rooms_cache', JSON.stringify(rooms));
       } catch {
         // Ignore storage failures.
       }
-      sessionStorage.setItem('admin_rooms_cache', JSON.stringify(rooms));
+      transientStorage.setItem('admin_rooms_cache', JSON.stringify(rooms));
     }
   }, [rooms]);
 
@@ -102,7 +104,7 @@ export default function AdminDashboard() {
     draftInitialized.current = true;
     // Empty arrays are written on mount; their serialized form is not a draft.
     // Hydrate once so later room events cannot overwrite an administrator's edits.
-    if (hasDecisionDraft(localStorage)) return;
+    if (hasDecisionDraft(storage)) return;
     const restored = decisionDraftFromServer(savedDecision);
     setGlobalQuestion(restored.globalQuestion);
     setDecisionContext(restored.decisionContext);
@@ -142,11 +144,11 @@ export default function AdminDashboard() {
       setRooms(rs);
       setCachedRooms(rs);
       try {
-        localStorage.setItem('admin_rooms_cache', JSON.stringify(rs));
+        storage.setItem('admin_rooms_cache', JSON.stringify(rs));
       } catch {
         // Ignore storage failures.
       }
-      sessionStorage.setItem('admin_rooms_cache', JSON.stringify(rs));
+      transientStorage.setItem('admin_rooms_cache', JSON.stringify(rs));
       if (rs.length > 0 && (!selectedRoomId || !rs.some((room) => room.id === selectedRoomId))) {
         setSelectedRoomId(rs[0].id);
       } else if (rs.length === 0) {
@@ -161,7 +163,7 @@ export default function AdminDashboard() {
   useEffect(() => { loadData().catch((e) => setError(e.message)); }, [token]);
   useEffect(() => {
     const socket = io(SOCKET_URL, {
-      auth: { token },
+      auth: { token, runId, admin: true },
       transports: ['websocket', 'polling']
     });
     socket.on('polls_updated', () => loadData().catch(() => { }));
@@ -238,33 +240,6 @@ export default function AdminDashboard() {
       } catch (e) {
         setError(e.message);
       }
-    }
-  };
-  const startDecisionProcess = async (cleanedQuestions) => {
-    try {
-      setDecisionAgentChat([]);
-      await apiRequest('/admin/decision-process/start', {
-        method: 'POST',
-        body: JSON.stringify({
-          globalQuestion,
-          decisionContext,
-          generalDescription,
-          deliberationQuestions: cleanedQuestions,
-          generalQuestionAnswers: (generalQuestionAnswers || []).map((a) => String(a || '').trim()).filter(Boolean),
-          roomTimerMinutes: decision.settings?.room_timer_minutes || 3,
-        })
-      }, token);
-
-      // Clear drafts upon successful start
-      localStorage.removeItem('cime_draft_global_question');
-      localStorage.removeItem('cime_draft_decision_context');
-      localStorage.removeItem('cime_draft_general_description');
-      localStorage.removeItem('cime_draft_deliberation_questions');
-      localStorage.removeItem('cime_draft_general_question_answers');
-
-      await ok('Decision process started');
-    } catch (e) {
-      setError(e.message);
     }
   };
   const updateDecisionSetting = async (key, value) => {
@@ -371,21 +346,22 @@ export default function AdminDashboard() {
           {error ? <p className="mb-4 rounded-2xl bg-red-500/10 border border-red-500/20 p-3 text-red-400 text-sm font-medium">{error}</p> : null}
           {info ? <p className="mb-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 p-3 text-emerald-400 text-sm font-medium">{info}</p> : null}
 
-          {activeMenu === 'decision' ? <DecisionTab decision={decision} globalQuestion={globalQuestion} setGlobalQuestion={setGlobalQuestion} decisionContext={decisionContext} setDecisionContext={setDecisionContext} generalDescription={generalDescription} setGeneralDescription={setGeneralDescription} deliberationQuestions={deliberationQuestions} setDeliberationQuestions={setDeliberationQuestions} generalQuestionAnswers={generalQuestionAnswers} setGeneralQuestionAnswers={setGeneralQuestionAnswers} startDecisionProcess={startDecisionProcess} chat={decisionAgentChat} sendMessage={sendDecisionAgentMessage} updateSetting={updateDecisionSetting} updateSettings={updateDecisionSettings} setCurrentSettingsAsDefault={setCurrentSettingsAsDefault} resetSettingsToDefault={resetSettingsToDefault} rooms={rooms} token={token} /> : null}
+          {activeMenu === 'decision' ? <DecisionTab decision={decision} globalQuestion={globalQuestion} setGlobalQuestion={setGlobalQuestion} decisionContext={decisionContext} setDecisionContext={setDecisionContext} generalDescription={generalDescription} setGeneralDescription={setGeneralDescription} deliberationQuestions={deliberationQuestions} setDeliberationQuestions={setDeliberationQuestions} generalQuestionAnswers={generalQuestionAnswers} setGeneralQuestionAnswers={setGeneralQuestionAnswers} chat={decisionAgentChat} sendMessage={sendDecisionAgentMessage} updateSetting={updateDecisionSetting} updateSettings={updateDecisionSettings} setCurrentSettingsAsDefault={setCurrentSettingsAsDefault} resetSettingsToDefault={resetSettingsToDefault} rooms={rooms} token={token} /> : null}
           {activeMenu === 'settings' ? <SettingsTab token={token} /> : null}
+          {activeMenu === 'surveys' ? <SurveysTab token={token} /> : null}
           {activeMenu === 'users' ? <UsersTab users={users} newUser={newUser} setNewUser={setNewUser} createUser={createUser} deleteUser={deleteUser} /> : null}
           {activeMenu === 'rooms' ? <RoomsTab rooms={rooms} users={users} newRoom={newRoom} setNewRoom={setNewRoom} createRoom={createRoom} deleteRoom={deleteRoom} deleteAllDiscussionGroups={deleteAllDiscussionGroups} restorePersonalMemberships={restorePersonalMemberships} clearRoom={clearRoom} saveMembers={saveMembers} /> : null}
           {activeMenu === 'polls' ? <PollsTab rooms={rooms} selectedRoom={selectedRoom} selectedRoomId={selectedRoomId} setSelectedRoomId={setSelectedRoomId} newPoll={newPoll} setNewPoll={setNewPoll} createPoll={createPoll} patchPoll={patchPoll} deletePoll={deletePoll} /> : null}
-          {activeMenu === 'quality' ? <QualityTab token={token} /> : null}
           {activeMenu === 'simulation' ? (
-            <SimulationTab
+            <Suspense fallback={<p>Loading simulation controls…</p>}><SimulationTab
               token={token}
               users={users}
               globalQuestion={globalQuestion}
               decisionContext={decisionContext}
               generalDescription={generalDescription}
+              generalQuestionAnswers={generalQuestionAnswers}
               deliberationQuestions={deliberationQuestions}
-            />
+            /></Suspense>
           ) : null}
           {activeMenu === 'documentation' ? <DocumentationTab /> : null}
           {activeMenu === 'database' ? <DatabaseTab token={token} /> : null}
@@ -432,11 +408,11 @@ const SETTING_LABELS = {
   },
   room_timer_minutes: {
     label: 'Room timer',
-    help: 'Controls how long a room can stay in its current phase before the timer forces the next step.',
+    help: 'Controls the discussion countdown. Remaining topic votes finish before the final question.',
     description: 'Sets the duration of the countdown timer allocated to discussion room phases.',
     notes: [
       'Displayed in the header top bar of the chat.',
-      'When the timer expires, the room transitions to next topics or convergence rounds, using ranking fallback polls if needed to resolve ties.'
+      'When the group countdown expires, existing ballots continue using their own timers. Every remaining topic is voted on before the final question and convergence.'
     ]
   },
   poll_approval_threshold: {
@@ -519,13 +495,19 @@ const SETTING_LABELS = {
   },
   time_before_poll_seconds: {
     label: 'Time before poll',
-    help: 'Seconds the bot waits after announcing the next topic (or the final recap) before it opens the poll (0 to 120, default 10).',
-    description: 'The single pause that governs every topic hand-off. When a topic is resolved, the bot announces the next topic and, after this delay, automatically opens its swipe poll. After the last topic it posts a recap and, after this delay, opens the final general-question vote.',
+    help: 'Seconds the bot waits after announcing the next discussion topic before it opens the poll (0 to 120, default 10).',
+    description: 'The single pause that governs every topic hand-off. When a topic is resolved, the bot announces the next topic and, after this delay, automatically opens its swipe poll. The pause before the final vote is controlled separately by Time before final vote.',
     notes: [
-      'Applies both to opening the next topic\'s swipe poll and to opening the final general-question poll.',
+      'Applies to opening the next discussion topic\'s swipe poll, including after convergence review.',
       '0 opens the next poll immediately after the announcement.',
       'This replaces the old "Time between automatic polls" and "Minimum time before a poll" for the group discussion flow.'
     ]
+  },
+  time_before_final_vote_seconds: {
+    label: 'Time before final vote',
+    help: 'Discussion time after the topic recap, before the final decision vote (0–1800 seconds).',
+    description: 'Gives participants time to review the topic decisions and discuss the main question before its final vote opens. Applies in discussion groups and convergence rooms. Chat stays available; voting waits for this period to end.',
+    notes: ['Separate from Time before poll, which controls transitions between discussion topics.', '300 seconds gives five minutes of final discussion. 0 opens the final vote immediately.', 'For existing configurations, initially uses the previous Time before poll value.']
   },
   user_poll_rate_limit: {
     label: 'User poll rate limit',
@@ -886,7 +868,6 @@ function DecisionTab({
   setDeliberationQuestions,
   generalQuestionAnswers = ['', ''],
   setGeneralQuestionAnswers,
-  startDecisionProcess,
   chat,
   sendMessage,
   updateSetting,
@@ -912,25 +893,6 @@ function DecisionTab({
   const [generatingQuestions, setGeneratingQuestions] = useState(false);
   const [genCount, setGenCount] = useState(5);
   const [generatingDescription, setGeneratingDescription] = useState(false);
-  const [monitoringRooms, setMonitoringRooms] = useState([]);
-
-  const fetchMonitoring = async () => {
-    try {
-      const data = await apiRequest('/admin/monitoring', {}, token);
-      if (data && data.rooms) {
-        setMonitoringRooms(data.rooms);
-      }
-    } catch (e) {
-      console.error('Failed to fetch monitoring rooms:', e);
-    }
-  };
-
-  useEffect(() => {
-    fetchMonitoring();
-    const interval = setInterval(fetchMonitoring, 4000);
-    return () => clearInterval(interval);
-  }, [token]);
-
   useEffect(() => {
     if (!infoModal) return undefined;
     const handleKeyDown = (e) => {
@@ -1127,21 +1089,6 @@ function DecisionTab({
     setDeliberationQuestions((prev) => prev.filter((_item, i) => i !== index));
   };
 
-
-  // The single Start/Interrupt button reflects the actual process state: while gathering or
-  // discussing it reads "Interrupt"; once idle (never started, or previously interrupted/reset)
-  // or completed (ready to configure and launch a new one) it reads "Start Process".
-  const isProcessRunning = decision.current_phase === 'gathering' || decision.current_phase === 'discussing';
-
-  const triggerInterrupt = async () => {
-    if (!await window.confirmAsync("Are you sure you want to interrupt the decision process? This will clear all timers, close open polls, and deactivate all rooms.")) return;
-    try {
-      await apiRequest('/admin/decision-process/interrupt', { method: 'POST' }, token);
-      alert('Decision process interrupted successfully!');
-    } catch (err) {
-      alert('Failed to interrupt process: ' + err.message);
-    }
-  };
 
   return <div className="space-y-4">
     <InfoModal />
@@ -1377,42 +1324,7 @@ function DecisionTab({
         </div>
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800/50 pt-6 mt-2">
           <p className="text-xs text-slate-500 max-w-lg leading-relaxed">This context is used by all agents when collecting information, guiding discussion, evaluating vote readiness, and drafting polls.</p>
-          <div className="flex items-center gap-3 w-full sm:w-auto">
-            {isProcessRunning ? (
-              <button
-                onClick={triggerInterrupt}
-                className="flex-1 sm:flex-none rounded-full bg-amber-500/10 text-amber-400 hover:bg-amber-500 hover:text-white border border-amber-500/20 px-8 py-3 text-sm font-semibold transition-all active:scale-95 shadow-sm w-full sm:w-auto text-center"
-              >
-                Interrupt
-              </button>
-            ) : (
-              <button onClick={() => {
-                if (!globalQuestion.trim()) {
-                  alert('Global question is mandatory.');
-                  return;
-                }
-                if (!decisionContext.trim()) {
-                  alert('Additional context for the agents is mandatory.');
-                  return;
-                }
-                const cleanedQuestions = deliberationQuestions
-                  .map((question, index) => ({
-                    topic: String(question.topic || `topic-${index + 1}`).trim() || `topic-${index + 1}`,
-                    question_text: String(question.question_text || '').trim(),
-                    question_order: index + 1,
-                    predefined_answers: Array.isArray(question.predefined_answers)
-                      ? question.predefined_answers.map((answer) => String(answer || '').trim()).filter(Boolean).slice(0, 6)
-                      : []
-                  }))
-                  .filter((question) => question.question_text);
-                if (!cleanedQuestions.length) {
-                  alert('At least one deliberation question must have text.');
-                  return;
-                }
-                startDecisionProcess(cleanedQuestions);
-              }} className="flex-1 sm:flex-none rounded-full bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 px-8 py-3 text-sm font-semibold text-white transition-all active:scale-95 shadow-md shadow-indigo-900/20 w-full sm:w-auto text-center">Start Process</button>
-            )}
-          </div>
+          <a href={`/#/runs/${runId}`} className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold">Open decision setup</a>
         </div>
       </div>
     </div>
@@ -1492,6 +1404,7 @@ function DecisionTab({
             live_voting_duration_minutes: 120,
             suggestion_cooldown_seconds: 3600,
             time_before_poll_seconds: 120,
+            time_before_final_vote_seconds: 1800,
             maximum_visible_options: 20,
             consensus_sensitivity: 10,
             room_timer_minutes: 30,
@@ -1502,15 +1415,15 @@ function DecisionTab({
             user_inactivity_timeout_minutes: 15
           };
           const maxVal = maxVals[key] || 5;
-          const defaultVal = key === 'consensus_sensitivity' ? 4 : (key === 'poll_approval_threshold' ? 1 : (key === 'minimum_votes_for_approval' ? 50 : (key === 'minimum_live_voting_duration_minutes' ? 1 : (key === 'consensus_stability_duration_seconds' ? 20 : (key === 'live_voting_duration_minutes' ? 5 : (key === 'suggestion_cooldown_seconds' ? 30 : (key === 'time_before_poll_seconds' ? 10 : (key === 'maximum_visible_options' ? 8 : (key === 'poll_timer_minutes' ? 2 : (key === 'convergence_summary_minutes' ? 1 : (key === 'user_poll_rate_limit' ? 11 : (key === 'user_inactivity_timeout_minutes' ? 5 : 3))))))))))));
+          const defaultVal = key === 'consensus_sensitivity' ? 4 : (key === 'poll_approval_threshold' ? 1 : (key === 'minimum_votes_for_approval' ? 50 : (key === 'minimum_live_voting_duration_minutes' ? 1 : (key === 'consensus_stability_duration_seconds' ? 20 : (key === 'live_voting_duration_minutes' ? 5 : (key === 'suggestion_cooldown_seconds' ? 30 : ((key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds') ? 10 : (key === 'maximum_visible_options' ? 8 : (key === 'poll_timer_minutes' ? 2 : (key === 'convergence_summary_minutes' ? 1 : (key === 'user_poll_rate_limit' ? 11 : (key === 'user_inactivity_timeout_minutes' ? 5 : 3))))))))))));
           const currentVal = localSettings?.[key] !== undefined ? localSettings[key] : defaultVal;
           const currentToggleVal = !!(localSettings?.[key] ?? decision.settings?.[key] ?? false);
           const displayVal = (key === 'consensus_sensitivity')
             ? `${currentVal}/10 (${currentVal * 10}%)`
             : (key === 'minimum_votes_for_approval')
             ? `${currentVal}%`
-            : (key === 'consensus_stability_duration_seconds' || key === 'suggestion_cooldown_seconds' || key === 'time_before_poll_seconds')
-              ? (key === 'time_before_poll_seconds' && currentVal === 0 ? 'Immediate' : `${currentVal} sec`)
+            : (key === 'consensus_stability_duration_seconds' || key === 'suggestion_cooldown_seconds' || (key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds'))
+              ? ((key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds') && currentVal === 0 ? 'Immediate' : `${currentVal} sec`)
               : (key === 'live_voting_duration_minutes' || key === 'minimum_live_voting_duration_minutes' || key === 'user_inactivity_timeout_minutes' || key === 'convergence_summary_minutes')
                 ? `${currentVal} min`
                 : (key === 'maximum_visible_options')
@@ -1545,7 +1458,7 @@ function DecisionTab({
               </div>
               <p className="mb-4 text-xs leading-relaxed text-slate-400">{meta.help}</p>
             </div>
-            <input type="range" min={(key === 'user_poll_rate_limit' || key === 'minimum_live_voting_duration_minutes' || key === 'time_before_poll_seconds') ? 0 : (key === 'user_inactivity_timeout_minutes' ? 3 : 1)} max={maxVal} value={currentVal} onChange={(e) => setLocalSettings((prev) => ({ ...prev, [key]: Number(e.target.value) }))} onPointerUp={(e) => saveSetting(key, Number(e.target.value))} onKeyUp={(e) => saveSetting(key, Number(e.target.value))} onBlur={(e) => saveSetting(key, Number(e.target.value))} className="w-full cursor-pointer accent-indigo-500 h-1.5 bg-slate-800 rounded-lg appearance-none" />
+            <input type="range" min={(key === 'user_poll_rate_limit' || key === 'minimum_live_voting_duration_minutes' || (key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds')) ? 0 : (key === 'user_inactivity_timeout_minutes' ? 3 : 1)} max={maxVal} value={currentVal} onChange={(e) => setLocalSettings((prev) => ({ ...prev, [key]: Number(e.target.value) }))} onPointerUp={(e) => saveSetting(key, Number(e.target.value))} onKeyUp={(e) => saveSetting(key, Number(e.target.value))} onBlur={(e) => saveSetting(key, Number(e.target.value))} className="w-full cursor-pointer accent-indigo-500 h-1.5 bg-slate-800 rounded-lg appearance-none" />
           </div>;
         })}
       </div>}
@@ -1603,7 +1516,7 @@ function DecisionTab({
               'Topic Preference: Groups users based on the discussion topics they are most interested in.'
             ])} />
           </div>
-          <select value={localSettings.clustering_strategy || 'mixed'} onChange={(e) => saveImmediateSetting('clustering_strategy', e.target.value)} className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2.5 text-white shadow-sm focus:border-indigo-500 focus:outline-none transition-all">
+          <select value={localSettings.clustering_strategy || 'topic_preference'} onChange={(e) => saveImmediateSetting('clustering_strategy', e.target.value)} className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2.5 text-white shadow-sm focus:border-indigo-500 focus:outline-none transition-all">
             <option value="random">Random</option>
             <option value="homophilic">Homophilic</option>
             <option value="heterophilic">Heterophilic</option>
@@ -1632,7 +1545,7 @@ function DecisionTab({
                 'Ensures the process scales across multiple concurrent group tracks when there are many participants.'
               ])} />
             </div>
-            <input type="number" min="1" value={localSettings.clustering_min_rooms || 1} onChange={(e) => setLocalSettings((prev) => ({ ...prev, clustering_min_rooms: Number(e.target.value) }))} onBlur={(e) => saveSetting('clustering_min_rooms', Number(e.target.value))} className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-white shadow-sm focus:border-indigo-500 focus:outline-none transition-all" />
+            <input type="number" min="1" value={localSettings.clustering_min_rooms || 2} onChange={(e) => setLocalSettings((prev) => ({ ...prev, clustering_min_rooms: Number(e.target.value) }))} onBlur={(e) => saveSetting('clustering_min_rooms', Number(e.target.value))} className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-white shadow-sm focus:border-indigo-500 focus:outline-none transition-all" />
           </div>
           <p className="mt-4 text-xs leading-relaxed text-slate-400">If enough users exist, Agent 2 creates at least this many discussion rooms.</p>
         </div>
@@ -1693,120 +1606,7 @@ function DecisionTab({
 
     <div className="grid gap-6 mt-6 xl:grid-cols-3">{(decision.agents || []).map((agent) => <AgentPanel key={agent.key} agent={agent} />)}</div>
 
-    <section className="glass-panel rounded-3xl p-6 mt-8 shadow-xl text-left">
-      <div className="mb-5 flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-800/50 pb-4">
-        <div>
-          <h3 className="text-xl font-semibold tracking-tight text-white">Live Room Monitoring</h3>
-          <p className="text-sm text-slate-400 mt-1 font-inter">Real-time status, member presence, voting progress, and time left per room.</p>
-        </div>
-        <span className="mt-3 sm:mt-0 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 shadow-sm border border-emerald-500/20">
-          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          Active Session
-        </span>
-      </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        {monitoringRooms.map((room) => {
-          const formattedTimeLeft = room.is_active
-            ? `${Math.floor(room.timeLeftSeconds / 60)}m ${room.timeLeftSeconds % 60}s`
-            : 'Expired / Finished';
-          
-          return (
-            <div key={room.id} className="relative rounded-2xl border border-white/5 bg-slate-900/40 p-5 transition-all hover:border-indigo-500/30 flex flex-col justify-between shadow-inner">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-800/50 pb-3 mb-4">
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 block tracking-widest uppercase">{room.room_type} Room</span>
-                    <strong className="text-slate-100 text-base font-semibold block mt-0.5">{room.name}</strong>
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5">
-                    <span className={`inline-block rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${room.is_active ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                      {room.is_active ? 'Open' : 'Closed'}
-                    </span>
-                    <span className="text-xs text-slate-400 font-medium">Time: {formattedTimeLeft}</span>
-                  </div>
-                </div>
-
-                <div className="space-y-3.5 text-xs">
-                  <div>
-                    <span className="text-slate-400 font-semibold block mb-1">Participants ({room.membersCount}):</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {room.membersNicknames.map((name, idx) => (
-                        <span key={idx} className="rounded bg-slate-800 px-2 py-1 text-[11px] font-mono text-slate-300">
-                          {name}
-                        </span>
-                      ))}
-                      {room.membersCount === 0 && <span className="text-slate-500 italic text-slate-500">No human participants</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <span className="text-slate-400 font-semibold block mb-1">Approved Decisions:</span>
-                    <div className="space-y-1">
-                      {room.resolvedTopics.map((item, idx) => (
-                        <div key={idx} className="flex justify-between items-center bg-slate-900/60 rounded px-2 py-1.5 border border-slate-800/40">
-                          <span className="text-slate-300 truncate max-w-[200px]" title={item.topic}>{item.topic}</span>
-                          <span className="text-emerald-400 font-medium truncate max-w-[150px]" title={item.decision}>{item.decision}</span>
-                        </div>
-                      ))}
-                      {room.resolvedTopics.length === 0 && <span className="text-slate-500 italic block pl-1">None yet</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <span className="text-slate-400 font-semibold block mb-1">Voting Attempts per Topic:</span>
-                    <div className="space-y-1 font-mono text-[11px]">
-                      {Object.entries(room.votingAttempts).map(([topic, count], idx) => (
-                        <div key={idx} className="flex justify-between items-center text-slate-400 border-b border-slate-900/40 pb-1">
-                          <span className="truncate max-w-[240px]" title={topic}>{topic}</span>
-                          <span className="text-indigo-400 font-bold">{count} poll{count !== 1 ? 's' : ''}</span>
-                        </div>
-                      ))}
-                      {Object.keys(room.votingAttempts).length === 0 && <span className="text-slate-500 italic block pl-1 font-sans text-xs">No polls called yet</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <span className="text-slate-400 font-semibold block mb-1">Topics Still to Discuss:</span>
-                    <ul className="list-disc pl-4 space-y-0.5 text-slate-400">
-                      {room.unresolvedTopics.map((topic, idx) => (
-                        <li key={idx} className="truncate max-w-[340px]" title={topic}>{topic}</li>
-                      ))}
-                      {room.unresolvedTopics.length === 0 && <span className="text-slate-500 italic block pl-0 font-sans text-xs list-none">All topics covered!</span>}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-
-              {room.is_active && (
-                <div className="mt-4 pt-3 border-t border-slate-800/60 flex justify-end">
-                  <button
-                    onClick={async () => {
-                      if (!await window.confirmAsync(`Are you sure you want to trigger a Showdown for ${room.name}?`)) return;
-                      try {
-                        await apiRequest(`/rooms/${room.id}/showdown`, { method: 'POST' }, token);
-                        alert(`Showdown triggered for ${room.name}.`);
-                        fetchMonitoring();
-                      } catch (e) {
-                        alert(`Failed to trigger showdown: ${e.message}`);
-                      }
-                    }}
-                    className="rounded bg-red-600 hover:bg-red-700 text-white font-semibold py-1.5 px-3 text-xs transition-all shadow-md active:scale-95 cursor-pointer"
-                  >
-                    Trigger Showdown
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {monitoringRooms.length === 0 && (
-          <div className="col-span-2 text-center py-8 text-slate-500 border border-dashed border-slate-800 rounded-xl bg-slate-950/20">
-            No active or historical discussion group or convergence rooms found.
-          </div>
-        )}
-      </div>
-    </section>
   </div>;
 }
 

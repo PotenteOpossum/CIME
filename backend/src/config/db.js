@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
+import { PostgresDatabase } from '../storage/postgres.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_CHEAP_MODEL, DEFAULT_PRIMARY_MODEL, SUPPORTED_CHAT_MODELS, env } from './env.js';
@@ -9,7 +11,9 @@ const __dirname = path.dirname(__filename);
 // isolated SQLite file via CIME_DB_PATH so they never touch chat.db.
 const dbPath = process.env.CIME_DB_PATH || path.join(__dirname, '../../chat.db');
 
-export const db = new Database(dbPath);
+export const db = process.env.DATABASE_URL && process.env.CIME_RUN_SCHEMA
+  ? new PostgresDatabase({ url: process.env.DATABASE_URL, schema: process.env.CIME_RUN_SCHEMA })
+  : new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -443,6 +447,20 @@ export function initDb() {
     console.error('Failed to initialize llm_call_models defaults:', err);
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS survey_definitions (
+      stage TEXT PRIMARY KEY CHECK (stage IN ('pre', 'post')),
+      definition_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS survey_responses (
+      stage TEXT NOT NULL REFERENCES survey_definitions(stage),
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL,
+      answers_json TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      PRIMARY KEY (stage, user_id, run_id)
+    );
+  `);
   if (!hasColumn('users', 'is_admin')) db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('users', 'profile_info')) db.exec("ALTER TABLE users ADD COLUMN profile_info TEXT NOT NULL DEFAULT ''");
   if (!hasColumn('users', 'extracted_preferences')) db.exec("ALTER TABLE users ADD COLUMN extracted_preferences TEXT NOT NULL DEFAULT ''");
@@ -454,10 +472,13 @@ export function initDb() {
   if (!hasColumn('rooms', 'decision_round')) db.exec('ALTER TABLE rooms ADD COLUMN decision_round INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'room_timer_minutes')) db.exec('ALTER TABLE rooms ADD COLUMN room_timer_minutes INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'timer_expires_at')) db.exec('ALTER TABLE rooms ADD COLUMN timer_expires_at TEXT');
+  if (!hasColumn('rooms', 'room_timer_expired_at')) db.exec('ALTER TABLE rooms ADD COLUMN room_timer_expired_at TEXT');
   if (!hasColumn('rooms', 'collection_complete')) db.exec('ALTER TABLE rooms ADD COLUMN collection_complete INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'collection_banner')) db.exec("ALTER TABLE rooms ADD COLUMN collection_banner TEXT NOT NULL DEFAULT ''");
   if (!hasColumn('rooms', 'topic_memory_json')) db.exec("ALTER TABLE rooms ADD COLUMN topic_memory_json TEXT NOT NULL DEFAULT '[]'");
   if (!hasColumn('rooms', 'recap_report')) db.exec('ALTER TABLE rooms ADD COLUMN recap_report TEXT');
+  if (!hasColumn('rooms', 'final_vote_not_before')) db.exec('ALTER TABLE rooms ADD COLUMN final_vote_not_before TEXT');
+  if (!hasColumn('rooms', 'personal_poll_mode')) db.exec('ALTER TABLE rooms ADD COLUMN personal_poll_mode INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'current_gathering_question_id')) db.exec('ALTER TABLE rooms ADD COLUMN current_gathering_question_id INTEGER');
   if (!hasColumn('rooms', 'gathering_retry_count')) db.exec('ALTER TABLE rooms ADD COLUMN gathering_retry_count INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'opened_at')) db.exec('ALTER TABLE rooms ADD COLUMN opened_at TEXT');
@@ -477,6 +498,7 @@ export function initDb() {
   if (!hasColumn('polls', 'closed_at')) db.exec('ALTER TABLE polls ADD COLUMN closed_at TEXT');
   if (!hasColumn('polls', 'poll_stage')) db.exec("ALTER TABLE polls ADD COLUMN poll_stage TEXT NOT NULL DEFAULT 'standard'");
   if (!hasColumn('polls', 'minimum_live_until')) db.exec('ALTER TABLE polls ADD COLUMN minimum_live_until TEXT');
+  if (!hasColumn('polls', 'stability_leader_key')) db.exec('ALTER TABLE polls ADD COLUMN stability_leader_key TEXT');
   if (!hasColumn('polls', 'stability_started_at')) db.exec('ALTER TABLE polls ADD COLUMN stability_started_at TEXT');
   if (!hasColumn('polls', 'review_until')) db.exec('ALTER TABLE polls ADD COLUMN review_until TEXT');
   if (!hasColumn('polls', 'timeout_snapshot_json')) db.exec("ALTER TABLE polls ADD COLUMN timeout_snapshot_json TEXT NOT NULL DEFAULT ''");
@@ -602,7 +624,7 @@ export function initDb() {
   }
 
   db.prepare("INSERT INTO system_state (id, global_question, current_phase) VALUES (1, NULL, 'idle') ON CONFLICT(id) DO NOTHING").run();
-  db.prepare("UPDATE system_state SET decision_run_id = LOWER(HEX(RANDOMBLOB(16))) WHERE decision_run_id = ''").run();
+  db.prepare("UPDATE system_state SET decision_run_id = ? WHERE decision_run_id = ''").run(randomUUID());
 
   ensurePersonalRoomsForAllUsers();
   ensureAdminsInAllRooms();

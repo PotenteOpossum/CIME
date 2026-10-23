@@ -2,9 +2,12 @@ import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { db } from '../config/db.js';
 
-function currentUser(token) {
-  const payload = jwt.verify(token, env.jwtSecret);
+export function currentUser(token) {
+  const payload = jwt.verify(token, env.jwtSecret, { algorithms: ['HS256'], ...(process.env.CIME_ENGINE === 'true' ? { audience: 'cime-engine' } : {}) });
   if (!Number.isInteger(payload.id)) throw new Error('Invalid account');
+  if (process.env.CIME_ENGINE === 'true') {
+    if (payload.run !== process.env.CIME_RUN_ID || !db.prepare('SELECT id FROM run_sessions WHERE id = ? AND user_id = ? AND revoked = 0 AND expires_at > ?').get(payload.sid, payload.id, new Date().toISOString())) throw new Error('Invalid session');
+  }
   const user = db.prepare('SELECT id, username, is_admin FROM users WHERE id = ?').get(payload.id);
   if (!user) throw new Error('Account no longer exists');
   return { id: user.id, username: user.username, is_admin: user.is_admin === 1 };

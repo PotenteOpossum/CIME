@@ -262,7 +262,7 @@ export default function SwipeVoteModal({ poll, onSubmit, onClose, token }) {
             <div className="flex items-center justify-center gap-6">
               <button
                 onClick={() => processSwipe('left')}
-                className="flex h-16 w-16 items-center justify-center rounded-full border border-rose-100 bg-white text-rose-500 shadow-lg transition-all hover:scale-110 hover:border-rose-200 active:scale-95 dark:border-gray-700 dark:bg-[#282a2c]"
+                className="flex h-16 w-16 items-center justify-center rounded-full border border-rose-100 bg-white text-rose-500 shadow-lg transition-all hover:scale-110 hover:border-rose-200 active:scale-95 dark:border-gray-700 dark:bg-[#2d2924]"
                 aria-label="No"
               >
                 <XIcon className="w-7 h-7" />
@@ -304,7 +304,7 @@ export default function SwipeVoteModal({ poll, onSubmit, onClose, token }) {
               value={newOptionText}
               onChange={(e) => setNewOptionText(e.target.value)}
               placeholder="Type your option here..."
-              className="mb-5 w-full rounded-2xl border border-gray-200 bg-gray-50 px-5 py-3 text-sm dark:border-gray-700 dark:bg-[#282a2c] dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="mb-5 w-full rounded-2xl border border-gray-200 bg-gray-50 px-5 py-3 text-sm dark:border-gray-700 dark:bg-[#2d2924] dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50"
               onKeyDown={(e) => e.key === 'Enter' && handleAddOption()}
             />
             <div className="flex gap-3">

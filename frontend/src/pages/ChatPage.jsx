@@ -1,3 +1,5 @@
+import { useParticipantRun } from '../platform/ParticipantGate.jsx';
+import { participantRunId, sessionKey } from '../platform/client.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
@@ -9,13 +11,15 @@ import SwipeVoteModal from '../components/SwipeVoteModal.jsx';
 import PollSummaryModal from '../components/PollSummaryModal.jsx';
 import RecapModal from '../components/RecapModal.jsx';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
 const MonitorIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>;
 const DashboardIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>;
 
 export default function ChatPage() {
   const { roomId } = useParams();
+  const participantRun = useParticipantRun();
+  const runStopped = participantRun?.status === "interrupted";
   const navigate = useNavigate();
   const numericRoomId = Number(roomId);
   const { token, user, logout } = useAuth();
@@ -32,6 +36,7 @@ export default function ChatPage() {
   const prevPollIdsRef = useRef(null);
   const [countdownVal, setCountdownVal] = useState(null);
   const isExcludedRef = useRef(false);
+  const completionRecoveryRef = useRef(false);
   const [roomStatus, setRoomStatus] = useState(null);
   const [convergenceStatus, setConvergenceStatus] = useState(null);
   const [locallyReopened, setLocallyReopened] = useState(() => new Set());
@@ -42,7 +47,7 @@ export default function ChatPage() {
   const [error, setError] = useState('');
   const [room, setRoom] = useState(() => {
     try {
-      const saved = sessionStorage.getItem(`cime_room_cache_${roomId}`);
+      const saved = sessionStorage.getItem(sessionKey(`cime_room_cache_${roomId}`));
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
@@ -51,7 +56,7 @@ export default function ChatPage() {
   const [nowMs, setNowMs] = useState(Date.now());
   const [availableRooms, setAvailableRooms] = useState(() => {
     try {
-      const saved = sessionStorage.getItem('cime_available_rooms_cache');
+      const saved = sessionStorage.getItem(sessionKey('cime_available_rooms_cache'));
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -180,7 +185,7 @@ export default function ChatPage() {
     if (data.room) {
       setRoom(data.room);
       try {
-        sessionStorage.setItem(`cime_room_cache_${roomId}`, JSON.stringify(data.room));
+        sessionStorage.setItem(sessionKey(`cime_room_cache_${roomId}`), JSON.stringify(data.room));
       } catch {
         // Ignore storage quota / privacy mode failures.
       }
@@ -316,7 +321,7 @@ export default function ChatPage() {
       // group exists after the personal phase has completed.
       setAvailableRooms(nextRooms);
       try {
-        sessionStorage.setItem('cime_available_rooms_cache', JSON.stringify(nextRooms));
+        sessionStorage.setItem(sessionKey('cime_available_rooms_cache'), JSON.stringify(nextRooms));
       } catch {
         // Ignore storage quota / privacy mode failures.
       }
@@ -370,14 +375,40 @@ export default function ChatPage() {
 
   const displayedRoom = useMemo(() => {
     const fallbackRoom = availableRooms.find((r) => r.id === numericRoomId) || null;
-    if (!room) return fallbackRoom;
-    if (!fallbackRoom) return room;
-    return { ...fallbackRoom, ...room };
-  }, [availableRooms, numericRoomId, room]);
+    const current = room ? { ...fallbackRoom, ...room } : fallbackRoom;
+    return current && runStopped ? { ...current, is_active: false, collection_complete: false } : current;
+  }, [availableRooms, numericRoomId, room, runStopped]);
 
   useEffect(() => {
     displayedRoomRef.current = displayedRoom;
   }, [displayedRoom]);
+
+  // Socket completion events are transient. If a participant reconnects after the
+  // event (or report generation took longer than expected), recover the final report
+  // from the completed convergence room instead of leaving them in a closed room.
+  useEffect(() => {
+    if (user?.is_admin === 1 || displayedRoom?.room_type !== 'convergence'
+        || (displayedRoom?.is_active !== false && !displayedRoom?.collection_complete)) return undefined;
+    let disposed = false;
+    const checkForReport = async () => {
+      if (disposed || completionRecoveryRef.current) return;
+      try {
+        const data = await apiRequest(`/rooms/${numericRoomId}/recap`, {}, token);
+        if (data?.report && !disposed) {
+          completionRecoveryRef.current = true;
+          navigate('/dashboard', { state: { showRecap: true, recapReport: data.report } });
+        }
+      } catch {
+        // 202 means report generation is still in progress; retry below.
+      }
+    };
+    checkForReport();
+    const timer = setInterval(checkForReport, 3000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [displayedRoom?.room_type, displayedRoom?.is_active, displayedRoom?.collection_complete, numericRoomId, token, navigate, user?.is_admin]);
 
   // The user should be pulled into the next active room (e.g. the convergence room) whenever
   // this room is finished OR they are no longer a member of it (membership moved to the new
@@ -389,7 +420,7 @@ export default function ChatPage() {
   );
 
   useEffect(() => {
-    if (user?.is_admin === 1) {
+    if (user?.is_admin === 1 || runStopped) {
       setCountdownVal(null);
       return;
     }
@@ -403,7 +434,7 @@ export default function ChatPage() {
     } else {
       setCountdownVal(null);
     }
-  }, [displayedRoom?.collection_complete, displayedRoom?.is_active, noLongerMemberOfCurrent, activeNextRoom?.id, user?.is_admin]);
+  }, [displayedRoom?.collection_complete, displayedRoom?.is_active, noLongerMemberOfCurrent, activeNextRoom?.id, user?.is_admin, runStopped]);
 
   useEffect(() => {
     if (countdownVal === null) return;
@@ -434,7 +465,7 @@ export default function ChatPage() {
     setMessages([]);
     setPolls([]);
     try {
-      const saved = sessionStorage.getItem(`cime_room_cache_${roomId}`);
+      const saved = sessionStorage.getItem(sessionKey(`cime_room_cache_${roomId}`));
       setRoom(saved ? JSON.parse(saved) : null);
     } catch {
       setRoom(null);
@@ -458,7 +489,7 @@ export default function ChatPage() {
     if (!isValidRoomId) return undefined;
 
     const socket = io(SOCKET_URL, {
-      auth: { token },
+      auth: { token, runId: participantRunId },
       transports: ['websocket', 'polling']
     });
     socketRef.current = socket;
@@ -677,6 +708,7 @@ export default function ChatPage() {
       );
       const body = optionIds ? { optionIds, customOptionText } : (rankedOptions ? { rankedOptions } : { optionId, customOptionText });
       await apiRequest(`/rooms/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify(body) }, token);
+      await loadPolls();
       // Close the mobile poll modal after any submit (including live/continuous votes). The
       // floating "Live voting" banner stays visible so users can reopen to change their vote.
       setShowMobilePolls(false);
@@ -728,7 +760,7 @@ export default function ChatPage() {
   };
 
   const pollIsClosed = (poll) => {
-    if (poll.is_closed) return true;
+    if (runStopped || poll.is_closed) return true;
     if (!poll.expires_at) return false;
     return new Date(poll.expires_at).getTime() <= nowMs;
   };
@@ -856,7 +888,7 @@ export default function ChatPage() {
                       key={poll.id}
                       className={`rounded border p-3 shadow-sm transition-all duration-300 ${
                         isHighlighted
-                          ? 'relative z-50 ring-4 ring-indigo-500 border-indigo-500 bg-white dark:bg-slate-850 scale-[1.04] shadow-[0_0_25px_rgba(99,102,241,0.7)]'
+                          ? 'relative z-50 ring-4 ring-indigo-500 border-indigo-500 bg-white dark:bg-slate-850 scale-[1.04] shadow-[0_0_25px_rgba(217,119,87,0.35)]'
                           : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900'
                       }`}
                     >
@@ -1228,7 +1260,7 @@ export default function ChatPage() {
 
   return (
     <div
-      className="flex flex-col bg-white transition-colors duration-300 dark:bg-[#131314] text-gray-900 dark:text-gray-100 overscroll-none"
+      className="flex flex-col bg-white transition-colors duration-300 dark:bg-[#141413] text-gray-900 dark:text-gray-100 overscroll-none"
       style={{
         position: 'fixed',
         top: 0,
@@ -1241,12 +1273,12 @@ export default function ChatPage() {
         height: viewportHeight ? `${viewportHeight}px` : '100dvh'
       }}
     >
-      {(highlightedPollId || countdownVal !== null) && (
+      {!runStopped && (highlightedPollId || countdownVal !== null) && (
         <div className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[2px] transition-all duration-300 pointer-events-none" />
       )}
       {exitModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800 transition-colors duration-300">
+          <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800 transition-colors duration-300">
             <h2 className="mb-4 text-2xl font-bold text-slate-900 dark:text-slate-100">Thank you for joining</h2>
             <p className="mb-8 text-slate-700 dark:text-slate-300 leading-relaxed">
               Your participation has ended because you indicated you are not open to debate on this topic. Thank you for your time.
@@ -1266,7 +1298,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {activeSwipePoll && (
+      {activeSwipePoll && !runStopped && (
         <SwipeVoteModal
           poll={activeSwipePoll}
           token={token}
@@ -1301,7 +1333,7 @@ export default function ChatPage() {
 
       {inactivityWarning && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
-          <div className="max-w-md w-full mx-4 bg-white dark:bg-[#1e1f20] border border-red-500/30 rounded-3xl p-8 shadow-xl text-center">
+          <div className="max-w-md w-full mx-4 bg-white dark:bg-[#1c1a17] border border-red-500/30 rounded-3xl p-8 shadow-xl text-center">
             <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
               <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -1330,8 +1362,8 @@ export default function ChatPage() {
       )}
 
       {countdownVal !== null && activeNextRoom && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#131314]/80 backdrop-blur-md">
-          <div className="mx-4 max-w-md rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1e1f20] p-8 text-center shadow-xl transition-colors duration-300">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#141413]/80 backdrop-blur-md">
+          <div className="mx-4 max-w-md rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1c1a17] p-8 text-center shadow-xl transition-colors duration-300">
             <div className="relative mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-400 mx-auto border border-indigo-500/20">
               <span className="text-5xl font-black animate-ping absolute duration-1000">{countdownVal}</span>
               <span className="text-5xl font-black relative">{countdownVal}</span>
@@ -1346,7 +1378,7 @@ export default function ChatPage() {
 
       {showMobileRoomStatus && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 md:hidden animate-fade-in" onClick={() => setShowMobileRoomStatus(false)}>
-          <div className="w-full max-w-sm max-h-[80vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800" onClick={e => e.stopPropagation()}>
+          <div className="w-full max-w-sm max-h-[80vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-200 dark:border-slate-800">
               <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Room Status</h2>
               <button onClick={() => setShowMobileRoomStatus(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-full w-8 h-8 flex items-center justify-center">✕</button>
@@ -1358,7 +1390,7 @@ export default function ChatPage() {
 
       {showMobilePolls && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 md:hidden animate-fade-in" onClick={() => setShowMobilePolls(false)}>
-          <div className="w-full max-w-sm max-h-[80vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800" onClick={e => e.stopPropagation()}>
+          <div className="w-full max-w-sm max-h-[80vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-200 dark:border-slate-800">
               <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Room Polls</h2>
               <button onClick={() => setShowMobilePolls(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-full w-8 h-8 flex items-center justify-center">✕</button>
@@ -1381,7 +1413,7 @@ export default function ChatPage() {
         <button
           key={hasPendingMobilePoll ? `pending-${pendingMobilePollCount}` : (activeLiveVoting ? 'live' : 'idle')}
           onClick={() => setShowMobilePolls(true)}
-          className={`relative bg-emerald-600 text-white shadow-lg border-y border-l border-emerald-500/50 flex items-center hover:bg-emerald-500 transition-all ${(hasPendingMobilePoll || activeLiveVoting) ? `w-[46vw] gap-2 justify-center py-3.5 pl-4 pr-5 rounded-l-3xl shadow-[0_0_18px_rgba(16,185,129,0.65)] ${hasPendingMobilePoll ? 'animate-poll-alert' : ''}` : 'p-2.5 justify-center rounded-l-2xl'}`}
+          className={`relative bg-emerald-600 text-white shadow-lg border-y border-l border-emerald-500/50 flex items-center hover:bg-emerald-500 transition-all ${(hasPendingMobilePoll || activeLiveVoting) ? `w-[46vw] gap-2 justify-center py-3.5 pl-4 pr-5 rounded-l-3xl shadow-[0_0_18px_rgba(116,134,87,0.35)] ${hasPendingMobilePoll ? 'animate-poll-alert' : ''}` : 'p-2.5 justify-center rounded-l-2xl'}`}
           title="View Polls"
         >
           {hasPendingMobilePoll && (
@@ -1400,7 +1432,7 @@ export default function ChatPage() {
         </button>
       </div>
 
-      <header className="flex shrink-0 items-center border-b border-gray-200 bg-white px-4 md:px-6 py-3 transition-colors duration-300 dark:border-gray-800 dark:bg-[#131314]">
+      <header className="flex shrink-0 items-center border-b border-gray-200 bg-white px-4 md:px-6 py-3 transition-colors duration-300 dark:border-gray-800 dark:bg-[#141413]">
         <div className="mx-auto flex w-full max-w-7xl flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
             <img src={cimeLogo} alt="CIME Logo" className="h-8 md:h-10 w-auto object-contain shrink-0" />
@@ -1427,11 +1459,11 @@ export default function ChatPage() {
                 })()}
               </span>
             )}
-            <Link to="/agents" className="flex items-center justify-center gap-2 rounded-full border border-gray-200 bg-gray-50 p-2 md:px-4 md:py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]" title="Agent Monitor">
+            <Link to="/agents" className="flex items-center justify-center gap-2 rounded-full border border-gray-200 bg-gray-50 p-2 md:px-4 md:py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]" title="Agent Monitor">
               <MonitorIcon />
               <span className="hidden md:inline">Agent Monitor</span>
             </Link>
-            <Link to="/dashboard" className="flex items-center justify-center gap-2 rounded-full border border-gray-200 bg-gray-50 p-2 md:px-4 md:py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]" title="Back to Dashboard">
+            <Link to="/dashboard" className="flex items-center justify-center gap-2 rounded-full border border-gray-200 bg-gray-50 p-2 md:px-4 md:py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]" title="Back to Dashboard">
               <DashboardIcon />
               <span className="hidden md:inline">Back to Dashboard</span>
             </Link>
@@ -1441,6 +1473,7 @@ export default function ChatPage() {
 
       <main className="mx-auto flex-1 min-h-0 w-full gap-4 px-4 py-4 flex flex-col md:grid max-w-7xl md:grid-cols-[2fr_1fr]">
         <section className="flex min-h-0 flex-1 flex-col">
+          {runStopped && <p role="status" className="mb-3 rounded border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">Room is closed by Quality Agent.</p>}
           {error ? <p className="mb-3 rounded bg-red-900/50 p-2 text-sm text-red-200">{error}</p> : null}
           {displayedRoom?.collection_complete && displayedRoom?.room_type === 'personal' ? (
             <div className="mb-3 rounded border border-red-500/30 bg-red-900/50 p-3 text-sm text-red-100 flex flex-wrap items-center justify-between gap-2">
@@ -1470,13 +1503,18 @@ export default function ChatPage() {
             <div
               ref={messageListRef}
               onScroll={(e) => setShowScrollButton(e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight > 100)}
-              className="h-full space-y-3 overflow-y-auto overscroll-contain rounded-3xl border border-gray-200 bg-white p-4 shadow-sm scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:border-gray-800 dark:bg-[#1e1f20] dark:scrollbar-track-[#131314] dark:scrollbar-thumb-gray-700 transition-colors duration-300"
+              className="h-full space-y-3 overflow-y-auto overscroll-contain rounded-3xl border border-gray-200 bg-white p-4 shadow-sm scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:border-gray-800 dark:bg-[#1c1a17] dark:scrollbar-track-[#141413] dark:scrollbar-thumb-gray-700 transition-colors duration-300"
             >
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
                   message={msg}
                   currentUserId={user?.id}
+                  livePollIds={runStopped ? [] : polls.filter((poll) => !pollIsClosed(poll) && poll.poll_type === 'continuous').map((poll) => poll.id)}
+                  onAcceptLiveProposal={user?.is_admin ? undefined : async (pollId, messageId) => {
+                    await apiRequest(`/rooms/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify({ proposalMessageId: messageId }) }, token);
+                    await loadPolls();
+                  }}
                   onViewSummary={msg.is_bot && msg.text.includes('[View Summary]') ? () => {
                     fetchRecapReport().then((rep) => {
                       if (rep) setShowRecapModal(true);
@@ -1515,7 +1553,7 @@ export default function ChatPage() {
                 }
               }}
               placeholder={displayedRoom?.room_type === 'personal' ? 'Type message.' : 'Type message. Mention @bot to trigger the assistant'}
-              className="flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-6 py-3 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-[#282a2c] dark:text-gray-100 leading-relaxed scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700"
+              className="flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-6 py-3 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-[#2d2924] dark:text-gray-100 leading-relaxed scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700"
               style={{ maxHeight: `${MAX_INPUT_HEIGHT}px` }}
             />
             <button
@@ -1541,7 +1579,7 @@ export default function ChatPage() {
 
         <aside className="hidden md:flex h-full min-h-0 flex-col gap-4 shrink">
           {(displayedRoom?.room_type === 'group' || displayedRoom?.room_type === 'convergence') && (
-            <div className="flex-[0.4] overflow-y-auto rounded-3xl border border-gray-200 bg-white p-6 shadow-sm scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:border-gray-800 dark:bg-[#1e1f20] dark:scrollbar-track-[#131314] dark:scrollbar-thumb-gray-700 transition-colors duration-300">
+            <div className="flex-[0.4] overflow-y-auto rounded-3xl border border-gray-200 bg-white p-6 shadow-sm scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:border-gray-800 dark:bg-[#1c1a17] dark:scrollbar-track-[#141413] dark:scrollbar-thumb-gray-700 transition-colors duration-300">
               {renderRoomStatus()}
             </div>
           )}

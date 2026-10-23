@@ -1,0 +1,33 @@
+name: Test CIME platform
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: cime_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            admin-frontend/package-lock.json
+      - run: npm run install:all
+      - run: npm test
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-password@localhost:5432/cime_test
+      - run: npm run build

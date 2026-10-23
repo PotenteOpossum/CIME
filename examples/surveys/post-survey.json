@@ -1,0 +1,42 @@
+{
+  "stage": "post",
+  "enabled": true,
+  "title": "Your experience",
+  "description": "Please reflect on the experiment you just completed.",
+  "questions": [
+    {
+      "id": "satisfaction",
+      "type": "scale",
+      "label": "How satisfied are you with the group decision?",
+      "required": true,
+      "min": 1,
+      "max": 5,
+      "minLabel": "Very dissatisfied",
+      "maxLabel": "Very satisfied"
+    },
+    {
+      "id": "improve",
+      "type": "text",
+      "label": "What would have improved the decision?",
+      "required": true,
+      "condition": {
+        "questionId": "satisfaction",
+        "operator": "lte",
+        "value": 2
+      }
+    },
+    {
+      "id": "heard",
+      "type": "single_choice",
+      "label": "Did you feel heard?",
+      "required": true,
+      "options": ["Yes", "Partly", "No"]
+    },
+    {
+      "id": "feedback",
+      "type": "text",
+      "label": "Any other feedback?",
+      "required": false
+    }
+  ]
+}

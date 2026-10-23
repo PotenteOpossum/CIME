@@ -32,10 +32,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-white dark:bg-[#131314] p-4 transition-colors duration-300">
+    <div className="flex min-h-screen items-center justify-center bg-white dark:bg-[#141413] p-4 transition-colors duration-300">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1e1f20] p-8 shadow-sm dark:shadow-none transition-colors duration-300"
+        className="w-full max-w-sm rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1c1a17] p-8 shadow-sm dark:shadow-none transition-colors duration-300"
       >
         <div className="mb-6 flex justify-center">
           <img src={cimeLogo} alt="CIME Logo" className="h-16 w-auto object-contain" />
@@ -46,7 +46,7 @@ export default function LoginPage() {
         <input
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          className="mb-6 w-full rounded-full bg-gray-100 dark:bg-[#282a2c] px-4 py-3 text-gray-900 dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+          className="mb-6 w-full rounded-full bg-gray-100 dark:bg-[#2d2924] px-4 py-3 text-gray-900 dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
         />
 
         <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300 ml-2">Password</label>
@@ -54,7 +54,7 @@ export default function LoginPage() {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mb-8 w-full rounded-full bg-gray-100 dark:bg-[#282a2c] px-4 py-3 text-gray-900 dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+          className="mb-8 w-full rounded-full bg-gray-100 dark:bg-[#2d2924] px-4 py-3 text-gray-900 dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
         />
 
         {error ? <p className="mb-6 text-center text-sm font-medium text-red-500">{error}</p> : null}

@@ -36,8 +36,8 @@ export default function DocsPage() {
   return (
     // The docs page is always dark-styled; the `dark` class makes the shared
     // theme-aware markdown renderer use its dark palette here.
-    <div className="dark min-h-screen bg-[#071014] text-slate-100">
-      <header className="border-b border-cyan-900/40 bg-[#09181e]/95 px-5 py-4 backdrop-blur">
+    <div className="dark min-h-screen bg-[#141413] text-slate-100">
+      <header className="border-b border-cyan-900/40 bg-[#1c1a17]/95 px-5 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <img src={cimeLogo} alt="CIME Logo" className="h-12 w-auto object-contain" />

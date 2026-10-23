@@ -1,3 +1,4 @@
+import { storage, runId } from '../platform/context.js';
 import { useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api/client.js';
 import { parseSimulationSettingsJson, simulationSettingsToJson } from '../utils/adminJsonConfig.js';
@@ -116,10 +117,14 @@ export default function SimulationTab({
   deliberationQuestions = [],
   globalQuestion = '',
   decisionContext = '',
-  generalDescription = ''
+  generalDescription = '',
+  generalQuestionAnswers = []
 }) {
   const [loading, setLoading] = useState(true);
-  const [fastSimLoading, setFastSimLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoff, setHandoff] = useState(null);
+  const [handoffError, setHandoffError] = useState('');
   const [topics, setTopics] = useState([]);
   const [status, setStatus] = useState({ isRunning: false, stopAt: 'personal', model: 'gpt-5.6-luna', seed: 20260720, personas: {}, preferences: {} });
 
@@ -133,7 +138,7 @@ export default function SimulationTab({
   const [expanded, setExpanded] = useState(null); // userId whose editor is open
   const [autofillingUserId, setAutofillingUserId] = useState(null);
   const [autofillingAll, setAutofillingAll] = useState(false);
-  const [autofillMode, setAutofillMode] = useState(() => localStorage.getItem('sim_autofill_mode') || 'mixed_perspectives');
+  const [autofillMode, setAutofillMode] = useState(() => storage.getItem('sim_autofill_mode') || 'mixed_perspectives');
   const [preferences, setPreferences] = useState({});
   const [simulationUsers, setSimulationUsers] = useState([]);
   const [newParticipantNames, setNewParticipantNames] = useState('');
@@ -159,18 +164,18 @@ export default function SimulationTab({
       const fetchedUsers = userData.users || [];
       setSimulationUsers(fetchedUsers);
 
-      const isRunning = statusData.isRunning;
+      const isRunning = statusData.isRunning || statusData.canResume;
       setStatus(statusData);
 
       const deliberationQ = deliberationQuestions.length > 0 ? deliberationQuestions : (decisionData.deliberation_questions || []);
       const uniqueTopics = [...new Set(deliberationQ.filter(q => !q.is_general_question).map(q => q.topic))];
       setTopics(uniqueTopics);
 
-      const savedModel = localStorage.getItem('sim_model');
-      const savedSeed = localStorage.getItem('sim_seed');
-      const savedStopAt = localStorage.getItem('sim_stopAt');
-      const savedPersonasRaw = localStorage.getItem('sim_personas');
-      const savedPrefsRaw = localStorage.getItem('sim_preferences');
+      const savedModel = storage.getItem('sim_model');
+      const savedSeed = storage.getItem('sim_seed');
+      const savedStopAt = storage.getItem('sim_stopAt');
+      const savedPersonasRaw = storage.getItem('sim_personas');
+      const savedPrefsRaw = storage.getItem('sim_preferences');
 
       const legacySimulationModels = new Set(['gpt-4o', 'gpt-4o-mini', 'gpt-5.4', 'gpt-5.4-mini']);
       const usableSavedModel = legacySimulationModels.has(savedModel) ? 'gpt-5.6-luna' : savedModel;
@@ -235,21 +240,21 @@ export default function SimulationTab({
         uniqueTopics.forEach(topic => {
           if (!next[topic]) { next[topic] = ['', '', '', '', '', '', '', '']; modified = true; }
         });
-        if (modified) { localStorage.setItem('sim_preferences', JSON.stringify(next)); return next; }
+        if (modified) { storage.setItem('sim_preferences', JSON.stringify(next)); return next; }
         return prev;
       });
     }
   }, [deliberationQuestions]);
 
-  const handleModelChange = (val) => { setModel(val); localStorage.setItem('sim_model', val); };
+  const handleModelChange = (val) => { setModel(val); storage.setItem('sim_model', val); };
   const handleSeedChange = (val) => {
     const next = Number.isFinite(Number(val)) ? Math.trunc(Number(val)) : 20260720;
     setSeed(next);
-    localStorage.setItem('sim_seed', String(next));
+    storage.setItem('sim_seed', String(next));
   };
-  const handleStopAtChange = (val) => { setStopAt(val); localStorage.setItem('sim_stopAt', val); };
+  const handleStopAtChange = (val) => { setStopAt(val); storage.setItem('sim_stopAt', val); };
 
-  const persist = (next) => { localStorage.setItem('sim_personas', JSON.stringify(next)); return next; };
+  const persist = (next) => { storage.setItem('sim_personas', JSON.stringify(next)); return next; };
 
   const handleRandomizeOcean = () => {
     if (status.isRunning || isJsonMode || autofillingAll || autofillingUserId !== null) return;
@@ -282,7 +287,7 @@ export default function SimulationTab({
 
   const handleAutofillModeChange = (value) => {
     setAutofillMode(value);
-    localStorage.setItem('sim_autofill_mode', value);
+    storage.setItem('sim_autofill_mode', value);
   };
 
   const requestPersonaAutofill = (user, { perspective, assignmentIndex, populationSize }) => apiRequest('/admin/simulation/generate-persona', {
@@ -372,7 +377,7 @@ export default function SimulationTab({
       const topicPrefs = [...(prev[topic] || [])];
       topicPrefs[index] = val;
       const next = { ...prev, [topic]: topicPrefs };
-      localStorage.setItem('sim_preferences', JSON.stringify(next));
+      storage.setItem('sim_preferences', JSON.stringify(next));
       return next;
     });
   };
@@ -408,17 +413,18 @@ export default function SimulationTab({
     });
 
     try {
-      await apiRequest('/admin/simulation/start', {
+      setStarting(true);
+      await apiRequest(status.canResume ? '/admin/simulation/resume' : '/admin/simulation/start', {
         method: 'POST',
         body: JSON.stringify({
           stopAt, model, seed, personas: activePersonas, preferences: cleanPreferences,
-          globalQuestion, decisionContext, generalDescription, deliberationQuestions
+          globalQuestion, decisionContext, generalDescription, deliberationQuestions, generalQuestionAnswers
         })
       }, token);
       await checkStatus();
     } catch (e) {
       alert(`Failed to start simulation: ${e.message}`);
-    }
+    } finally { setStarting(false); }
   };
 
   const handleAddParticipants = async () => {
@@ -472,14 +478,31 @@ export default function SimulationTab({
       setStopAt(next.stopAt);
       setAgentPersonas(next.personas);
       setPreferences(next.preferences);
-      localStorage.setItem('sim_model', next.model);
-      localStorage.setItem('sim_seed', String(next.seed));
-      localStorage.setItem('sim_stopAt', next.stopAt);
-      localStorage.setItem('sim_personas', JSON.stringify(next.personas));
-      localStorage.setItem('sim_preferences', JSON.stringify(next.preferences));
+      storage.setItem('sim_model', next.model);
+      storage.setItem('sim_seed', String(next.seed));
+      storage.setItem('sim_stopAt', next.stopAt);
+      storage.setItem('sim_personas', JSON.stringify(next.personas));
+      storage.setItem('sim_preferences', JSON.stringify(next.preferences));
       setIsJsonMode(false);
     } catch (error) {
       alert(`Invalid simulation JSON: ${error.message}`);
+    }
+  };
+
+  const handleManualHandoff = async () => {
+    setHandoffBusy(true);
+    setHandoffError('');
+    try {
+      const response = await fetch(`/api/platform/runs/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not load the invitation link.');
+      const result = await apiRequest('/admin/simulation/handoff', { method: 'POST' }, token);
+      setHandoff({ ...result, inviteUrl: data.run.invite_url });
+      setStatus(result.status);
+    } catch (error) {
+      setHandoffError(error.message);
+    } finally {
+      setHandoffBusy(false);
     }
   };
 
@@ -488,24 +511,6 @@ export default function SimulationTab({
     catch (e) { alert(`Failed to stop simulation: ${e.message}`); }
   };
 
-  const handleFastSimulation = async () => {
-    if (stopAt !== 'discussing') {
-      alert('Only "Stop after Discussion Groups (Ready for convergence)" is currently supported for fast simulation.');
-      return;
-    }
-    const confirmed = await window.confirmAsync('This will wipe the current deliberation state and instantly mock a completed discussion phase. Continue?');
-    if (!confirmed) return;
-    setFastSimLoading(true);
-    try {
-      await apiRequest('/admin/decision-process/fast-simulation', { method: 'POST', body: JSON.stringify({ stopAt }) }, token);
-      alert('Fast simulation complete! The convergence room is ready.');
-      loadData();
-    } catch (err) {
-      alert(`Fast simulation failed: ${err.message}`);
-    } finally {
-      setFastSimLoading(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -546,27 +551,50 @@ export default function SimulationTab({
               {isJsonMode ? 'Apply JSON' : 'Edit JSON'}
             </button>
           )}
-          {isJsonMode && !status.isRunning && (
+      {isJsonMode && !status.isRunning && (
             <button type="button" onClick={() => setIsJsonMode(false)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-400 hover:text-white">
               Cancel
             </button>
           )}
           <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium border ${status.isRunning ? 'bg-emerald-950/45 text-emerald-400 border-emerald-800/40 animate-pulse' : 'bg-slate-800/45 text-slate-400 border-slate-700/50'}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${status.isRunning ? 'bg-emerald-500' : 'bg-slate-500'}`} />
-            {status.isRunning ? 'Simulation Running' : 'Simulation Stopped'}
+            {status.isRunning ? 'Simulation Running' : status.canResume ? 'Simulation Paused' : 'Simulation Stopped'}
           </span>
           {status.isRunning ? (
             <button onClick={handleStopSimulation} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-red-500 transition-colors">
               Stop Simulation
             </button>
           ) : (
-            <button onClick={handleStartSimulation} disabled={totalActiveAgents === 0}
+            <button onClick={handleStartSimulation} disabled={handoffBusy || starting || totalActiveAgents === 0 || (status.hasStarted && !status.canResume)}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-emerald-500 transition-colors disabled:opacity-40">
-              Start Simulation
+              {starting ? 'Starting…' : status.canResume ? 'Resume Simulation' : 'Start Simulation'}
             </button>
           )}
         </div>
       </div>
+
+          {(status.isRunning || status.canResume) && (
+        <div className="rounded-xl border border-slate-300 p-5 space-y-3">
+          <h3 className="font-semibold">Continue manually</h3>
+          <p className="text-sm text-slate-500">Pause all AI participants and get recovery codes to take over their existing rooms. Decision timers continue running. Stop Simulation ends the decision.</p>
+          <button type="button" disabled={handoffBusy || starting} onClick={handleManualHandoff} className="platform-button secondary disabled:opacity-50">
+            {handoffBusy ? 'Preparing recovery codes…' : handoff ? 'Replace recovery codes' : 'Pause agents & get recovery codes'}
+          </button>
+          {handoffError && <p role="alert" className="text-sm text-red-600">{handoffError}</p>}
+          {handoff && <div className="space-y-3">
+            <p className="text-sm">Save these codes now; only their hashes are stored. Replacing them invalidates the previous codes. Open the invitation in a separate browser profile or private window for each participant, and choose recovery code access.</p>
+            <a className="platform-button secondary" href={handoff.inviteUrl} target="_blank" rel="noreferrer">Open invitation</a>
+            {handoff.participants.map((participant) => <div key={participant.id} className="flex flex-wrap items-center gap-3">
+              <strong>{participant.username}</strong>
+              <input aria-label={`Recovery code for ${participant.username}`} readOnly value={participant.recoveryCode} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm" onFocus={(event) => event.target.select()} />
+              <button type="button" className="platform-button secondary" onClick={async () => { try { await navigator.clipboard.writeText(participant.recoveryCode); } catch { setHandoffError('Copy failed. Select the code and copy it manually.'); } }}>Copy code</button>
+            </div>)}
+          </div>}
+        </div>
+      )}
+
+      {status.lastError && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700">Simulation error: {status.lastError}</p>}
+      {status.hasStarted && !status.isRunning && !status.canResume && <p className="rounded-lg border border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">This run has ended. Use Create another run on the decision setup page to run a new simulation.</p>}
 
       {isJsonMode && !status.isRunning && (
         <div className="rounded-xl border border-emerald-700/50 bg-slate-900/60 p-5">
@@ -606,7 +634,7 @@ export default function SimulationTab({
                 type="number"
                 step="1"
                 value={seed}
-                disabled={status.isRunning}
+                disabled={status.isRunning || status.hasStarted}
                 onChange={(event) => handleSeedChange(event.target.value)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 focus:border-blue-500 focus:outline-none disabled:opacity-50"
               />
@@ -614,13 +642,13 @@ export default function SimulationTab({
             </div>
             <div>
               <label className="text-xs text-slate-400 block mb-1">Stop Simulation Phase</label>
-              <select value={stopAt} onChange={(e) => handleStopAtChange(e.target.value)}
+              <select value={stopAt} disabled={status.isRunning} onChange={(e) => handleStopAtChange(e.target.value)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 focus:border-blue-500 focus:outline-none">
-                <option value="personal">Stop after Personal Rooms (Ready for group debate)</option>
-                <option value="discussing">Stop after Discussion Groups (Ready for convergence)</option>
+                <option value="personal">Pause before the personal openness vote</option>
+                <option value="discussing">Pause before the group final vote</option>
                 <option value="convergence">Run through Convergence (Full complete)</option>
               </select>
-              <p className="text-[10px] text-slate-500 mt-1 leading-normal">Stops the agent simulation at a phase so real users can take over the rest.</p>
+              <p className="text-[10px] text-slate-500 mt-1 leading-normal">Pausing stops the agents while decision timers continue. Select a later phase and Resume Simulation to continue. Stop Simulation ends the run.</p>
             </div>
           </div>
         </div>
@@ -876,26 +904,6 @@ export default function SimulationTab({
           </div>
         </div>
       )}
-
-      {/* Fast Simulation Section */}
-      <div className="rounded-xl border border-indigo-800/40 bg-indigo-900/10 p-5 mt-6">
-        <h3 className="text-sm font-semibold text-indigo-300 border-b border-indigo-800/40 pb-2 mb-4">Fast Simulation (Mock Data)</h3>
-        <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-          Need to test the final convergence round without waiting for the simulated agents? Use this to instantly populate the database with mock decisions and immediately jump to the selected stop phase. <strong>Note:</strong> This will erase the current deliberation state.
-        </p>
-        <button onClick={handleFastSimulation} disabled={fastSimLoading || status.isRunning || stopAt !== 'discussing'}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
-          {fastSimLoading ? (
-            <>
-              <svg className="h-4 w-4 animate-spin text-white" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              Fast Simulating...
-            </>
-          ) : 'Run Fast Simulation'}
-        </button>
-      </div>
 
       {showInfo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowInfo(false)}>

@@ -40,3 +40,6 @@ backups/
 *.bak
 .vscode/
 .idea/
+
+# Isolated platform runs, local mail outbox and supervisor lock
+backend/data/

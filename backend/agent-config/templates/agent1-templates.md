@@ -48,7 +48,7 @@ If a user asks a question related to the decision process, the active topic, the
 A user asked a direct question about the decision process or the current room state. Answer directly and clearly. Do not ignore the question.
 
 ## Group Quiet Trigger
-The group discussion has been quiet for {{minutes}} minutes. Write ONE very short, natural message (at most 2 sentences) that re-opens the discussion on the current topic "{{active_topic}}" — for example by naming a tradeoff or open question about it, or inviting reactions to a point already raised. You may reference the possible options ({{active_topic_options}}) as discussion material, but NEVER ask participants to say how they will vote or whether they are yes/no/abstained. Do not invent external choices or details not already discussed. Do not repeat yourself or send more than one message.
+The group discussion has been quiet for {{minutes}} minutes. Write ONE brief, natural chat message (no more than 2 short sentences) to restart discussion on "{{active_topic}}". You may point out a trade-off, ask a focused question about a point already raised, or offer one tentative option idea that combines points participants have already discussed. Make clear that a new idea is only a suggestion for discussion. Options already available: {{active_topic_options}}. Never ask how anyone will vote, invent facts, claim to know private preferences, or repeat a previous nudge.
 
 ## Socket Auto Trigger
 1:1 room auto-response

@@ -1,6 +1,7 @@
 import { db } from '../config/db.js';
 import { getDecisionSettings } from './agentConfigService.js';
 import { readLog } from './decisionLogService.js';
+import { surveyExport } from './surveyService.js';
 
 const EXPORT_VERSION = 2;
 
@@ -20,6 +21,7 @@ function rowsFromIds(table, column, ids) {
 }
 
 function rowsSince(table, timeColumn, since, extraWhere = '', extraParams = []) {
+  if (process.env.CIME_ENGINE === 'true') since = null;
   const clauses = [];
   const params = [];
   if (since) {
@@ -32,6 +34,7 @@ function rowsSince(table, timeColumn, since, extraWhere = '', extraParams = []) 
 }
 
 function rowsForRooms(table, roomIds, timeColumn, since) {
+  if (process.env.CIME_ENGINE === 'true') since = null;
   if (!roomIds.length) return [];
   const placeholders = roomIds.map(() => '?').join(', ');
   const params = [...roomIds];
@@ -44,7 +47,7 @@ function selectCurrentRunRooms(allRooms, since) {
   // Personal rooms are long-lived and reused between runs. Only a personal room
   // with activity in this run belongs in the export; including every personal
   // room was the reason an eight-agent simulation exported all seeded accounts.
-  if (!since) return allRooms;
+  if (!since || process.env.CIME_ENGINE === 'true') return allRooms;
   const activityRoomIds = new Set([
     ...rowsSince('messages', 'timestamp', since).map((row) => row.room_id),
     ...rowsSince('polls', 'created_at', since).map((row) => row.room_id),
@@ -65,10 +68,14 @@ function collectIds(rows, key) {
  * route because that route can trigger uncached LLM/embedding analysis on a first load.
  */
 export function buildComputedRunExport() {
+  const surveys = surveyExport();
   const state = db.prepare('SELECT * FROM system_state WHERE id = 1').get() || {};
   const runId = state.decision_run_id || null;
   const runStartedAt = state.decision_run_started_at || null;
-  const allRooms = db.prepare('SELECT * FROM rooms ORDER BY id').all();
+  const frozenIds = process.env.CIME_ENGINE === 'true'
+    ? state.decision_run_mode === 'simulation' ? parseJson(state.decision_run_participant_ids_json, []) : db.prepare('SELECT user_id FROM run_participants').all().map(p => p.user_id)
+    : null;
+  const allRooms = db.prepare('SELECT * FROM rooms ORDER BY id').all().filter(room => !frozenIds || room.room_type !== 'personal' || db.prepare('SELECT user_id FROM room_members WHERE room_id = ?').all(room.id).some(member => frozenIds.includes(member.user_id)));
   const rooms = selectCurrentRunRooms(allRooms, runStartedAt);
   const roomIds = rooms.map((room) => room.id);
 
@@ -135,7 +142,9 @@ export function buildComputedRunExport() {
   };
 
   const records = {
+    surveyResponses: surveys.responses,
     users,
+    ...(process.env.CIME_ENGINE === 'true' ? { participantIdentities: db.prepare('SELECT user_id, joined_at, prolific_pid, prolific_study_id, prolific_session_id FROM run_participants ORDER BY user_id').all() } : {}),
     adminUsers,
     rooms,
     roomMembers,
@@ -168,6 +177,7 @@ export function buildComputedRunExport() {
       exportType: 'cime-computed-run-data',
       generatedAt: new Date().toISOString(),
       decisionRunId: runId,
+      platformRunId: process.env.CIME_RUN_ID || null,
       decisionRunStartedAt: runStartedAt,
       currentPhase: state.current_phase || 'idle',
       participantCount: users.length,
@@ -177,6 +187,7 @@ export function buildComputedRunExport() {
       qualityComputedOnly: true
     },
     configuration: {
+      surveys: surveys.definitions,
       globalQuestion: state.global_question || '',
       decisionContext: state.decision_context || '',
       generalDescription: state.general_description || '',
@@ -188,7 +199,8 @@ export function buildComputedRunExport() {
         ...question,
         predefined_answers: parseJson(question.predefined_answers_json, [])
       })),
-      decisionLog: readLog()
+      decisionLog: readLog(),
+      ...(process.env.CIME_ENGINE === 'true' ? { runSnapshot: parseJson(db.prepare('SELECT config_json FROM run_metadata WHERE id = 1').get()?.config_json, {}) } : {})
     },
     quality,
     records

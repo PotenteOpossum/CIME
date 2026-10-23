@@ -1,6 +1,23 @@
 import { useState, useEffect } from 'react';
 
-export default function MessageBubble({ message, currentUserId, onViewSummary, onReopenTopic, onAgree, convergenceStatus, locallyReopened, locallyAgreed }) {
+export default function MessageBubble({ message, currentUserId, onViewSummary, onReopenTopic, onAgree, convergenceStatus, locallyReopened, locallyAgreed, onAcceptLiveProposal, livePollIds = [] }) {
+  const [acceptingProposal, setAcceptingProposal] = useState(false);
+  const [proposalError, setProposalError] = useState('');
+  let liveProposal = null;
+  let visibleText = message.text;
+  if (message.is_bot) {
+    const marker = '[LiveVoteProposal=';
+    const at = message.text.lastIndexOf(marker);
+    if (at >= 0 && message.text.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(message.text.slice(at + marker.length, -1));
+        if (Number.isInteger(parsed.pollId) && typeof parsed.optionText === 'string') {
+          liveProposal = parsed;
+          visibleText = message.text.slice(0, at).trim();
+        }
+      } catch { /* Keep malformed historical messages visible. */ }
+    }
+  }
   const isMine = message.sender_id === currentUserId;
   const isBot = !!message.is_bot;
 
@@ -13,7 +30,7 @@ export default function MessageBubble({ message, currentUserId, onViewSummary, o
       ? 'bg-transparent text-gray-900 dark:text-gray-100 border-none px-0'
       : isMine
         ? 'bg-gray-100 text-gray-900 dark:bg-[#333538] dark:text-gray-100 rounded-3xl rounded-tr-sm'
-        : 'bg-white text-gray-900 border border-gray-200 shadow-sm dark:bg-[#282a2c] dark:text-gray-100 dark:border-none rounded-3xl rounded-tl-sm';
+        : 'bg-white text-gray-900 border border-gray-200 shadow-sm dark:bg-[#2d2924] dark:text-gray-100 dark:border-none rounded-3xl rounded-tl-sm';
 
   const containsViewSummary = isBot && message.text.includes('[View Summary]');
   const isConvergenceSummary = isBot && message.text.startsWith('[ConvergenceSummary=');
@@ -94,7 +111,7 @@ export default function MessageBubble({ message, currentUserId, onViewSummary, o
                 </h4>
                 <div className="flex flex-col gap-2">
                   {data.generalResults.map((result, idx) => (
-                    <div key={idx} className="flex justify-between items-center rounded-lg border border-indigo-100 bg-white p-3 text-sm shadow-sm dark:border-indigo-800 dark:bg-[#1e1f20]">
+                    <div key={idx} className="flex justify-between items-center rounded-lg border border-indigo-100 bg-white p-3 text-sm shadow-sm dark:border-indigo-800 dark:bg-[#1c1a17]">
                       <span className="font-semibold text-indigo-700 dark:text-indigo-300">{result.roomName}</span>
                       <span className="text-gray-700 dark:text-gray-300 font-medium">{result.decision}</span>
                     </div>
@@ -109,7 +126,7 @@ export default function MessageBubble({ message, currentUserId, onViewSummary, o
             // participants' reopens are revealed after it closes (via serverReopened).
             const wasReopened = interactive ? youReopened.has(topic.key) : (serverReopened.has(topic.key) || youReopened.has(topic.key));
             return (
-              <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-[#1e1f20] flex gap-3 items-start justify-between">
+              <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-[#1c1a17] flex gap-3 items-start justify-between">
                 <div>
                   <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-1">{topic.question}</h4>
                   {topic.status === 'agreed' ? (
@@ -118,7 +135,7 @@ export default function MessageBubble({ message, currentUserId, onViewSummary, o
                     </p>
                   ) : (
                     <div className="text-sm">
-                      <span className="text-amber-600 dark:text-amber-400 font-medium">This topic is still open between {topic.options?.length || 0} options:</span>
+                      <span className="text-amber-600 dark:text-amber-400 font-medium">{topic.status === 'open' ? 'This topic still needs discussion and voting:' : `This topic is still open between ${topic.options?.length || 0} options:`}</span>
                       <ul className="mt-1 list-disc pl-5 text-gray-600 dark:text-gray-400">
                         {topic.options?.map((opt, j) => <li key={j}>{opt}</li>)}
                       </ul>
@@ -199,12 +216,27 @@ export default function MessageBubble({ message, currentUserId, onViewSummary, o
         <span className="opacity-75 text-xs">· {new Date(message.timestamp).toLocaleTimeString()}</span>
       </div>
       <div className={`max-w-[85%] rounded-3xl px-5 py-3 text-base leading-relaxed whitespace-pre-wrap ${bubbleClass} ${isConvergenceSummary ? '!max-w-full' : ''}`}>
-        {isConvergenceSummary ? renderConvergenceSummary(message.text) : renderText(message.text)}
+        {isConvergenceSummary ? renderConvergenceSummary(message.text) : renderText(visibleText)}
+        {liveProposal && onAcceptLiveProposal && (
+          <div className="mt-3">
+            <button className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              disabled={acceptingProposal || !livePollIds.includes(liveProposal.pollId)}
+              onClick={async () => {
+                setAcceptingProposal(true); setProposalError('');
+                try { await onAcceptLiveProposal(liveProposal.pollId, message.id); }
+                catch (error) { setProposalError(error.message || 'The option could not be added.'); }
+                finally { setAcceptingProposal(false); }
+              }}>
+              {acceptingProposal ? 'Adding your vote…' : livePollIds.includes(liveProposal.pollId) ? 'Add and vote this option' : 'Voting is closed'}
+            </button>
+            {proposalError && <p role="alert" className="mt-2 text-sm text-red-600">{proposalError}</p>}
+          </div>
+        )}
         {containsViewSummary && onViewSummary && (
           <div className="mt-3">
             <button
               onClick={onViewSummary}
-              className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1e1f20] dark:text-gray-200 dark:hover:bg-[#282a2c]"
+              className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-100 dark:border-gray-800 dark:bg-[#1c1a17] dark:text-gray-200 dark:hover:bg-[#2d2924]"
               title="View Room Summary"
             >
               <span>📊 View Summary</span>

@@ -131,7 +131,7 @@ Great, we agreed on: {{decision}}. However, we still need to decide on the remai
 
 
 ## Personal Timer Poll Message
-It looks like you might be away. I've opened a poll for each question that is still unanswered. Please vote so we can proceed.
+Please answer the current question in the poll. We will continue one question at a time, then ask how open you are to debate.
 
 
 ## Option Expansion System

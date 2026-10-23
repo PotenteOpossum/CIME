@@ -2,14 +2,14 @@ import { createContext, useContext, useMemo, useState } from 'react';
 
 const AdminAuthContext = createContext(null);
 
-const TOKEN_KEY = 'admin_jwt_token';
-const USER_KEY = 'admin_user';
+const TOKEN_KEY = 'cime_account_token';
+const USER_KEY = 'cime_account_user';
 
 export function AdminAuthProvider({ children }) {
   const [token, setToken] = useState(sessionStorage.getItem(TOKEN_KEY) || '');
   const [user, setUser] = useState(() => {
     const raw = sessionStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
+    return raw ? { ...JSON.parse(raw), username: JSON.parse(raw).name, is_admin: true } : null;
   });
 
   const login = ({ token: nextToken, user: nextUser }) => {
@@ -20,6 +20,7 @@ export function AdminAuthProvider({ children }) {
   };
 
   const logout = () => {
+    fetch('/api/accounts/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(USER_KEY);
     setToken('');

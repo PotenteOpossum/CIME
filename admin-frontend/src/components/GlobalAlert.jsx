@@ -48,7 +48,7 @@ export default function GlobalAlert() {
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm transition-all duration-300">
-      <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-[#1e1f20] transform scale-100 animate-in fade-in zoom-in duration-200">
+      <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-[#1c1a17] transform scale-100 animate-in fade-in zoom-in duration-200">
         <div className="mb-4 flex items-center gap-3">
           <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${isConfirm ? 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}`}>
             {isConfirm ? (
@@ -75,7 +75,7 @@ export default function GlobalAlert() {
           )}
           <button
             onClick={isConfirm ? handleConfirm : handleCloseAlert}
-            className={`rounded-full px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-[#1e1f20] ${isConfirm ? 'bg-amber-600 hover:bg-amber-700 focus:ring-amber-500' : 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'}`}
+            className={`rounded-full px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-[#1c1a17] ${isConfirm ? 'bg-amber-600 hover:bg-amber-700 focus:ring-amber-500' : 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'}`}
           >
             {isConfirm ? 'Confirm' : 'OK'}
           </button>

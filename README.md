@@ -1,195 +1,91 @@
 # CIME — Collective Intelligence Made Easy
 
-<p align="center">
-  <img src="frontend/src/img/CIME_LOGO.png" alt="CIME logo" width="280">
-</p>
-
-CIME is a web application for structured collective decision-making. It connects private interviews, small-group discussion, voting, and collective review, with AI-assisted facilitation and explicit backend rules for process control.
-
-For a detailed explanation of the implementation, administrator controls, simulation and quality methods, and experiment setup, see the [CIME implementation and research guide](CIME_GUIDE.md).
-
-## Features
-
-- Private conversations to collect participants' views and topic preferences.
-- Group formation and topic-focused discussion with an AI facilitator.
-- Approval ballots, revisable live votes, participant-proposed alternatives, and ranking.
-- Collective review of subgroup decisions and a final vote on the main question.
-- Separate participant and administrator interfaces.
-- Configurable prompts, model selection, timing, quorum, and approval settings.
-- Poll hand-offs use the configurable `time_before_poll_seconds` delay; `poll_timer_minutes` and the live-voting duration control how long the respective vote stages remain open.
-- Participation indicators, automated discussion-quality assessments, and run exports.
-- Optional simulated participants configured through the administrator interface.
-
-This repository contains the application and the resources needed to run it. It does not include research experiment runners, test suites, manuscripts, figure-generation scripts, deployment credentials, or previously collected data.
-
-## Architecture
-
-| Component | Purpose |
-| --- | --- |
-| `backend/` | Express API, Socket.IO events, authentication, SQLite persistence, and workflow coordination |
-| `frontend/` | React/Vite participant interface |
-| `admin-frontend/` | React/Vite administrator interface |
-| `backend/agent-config/` | Agent instructions and prompt templates |
-| `backend/prompts/` | Default and locally created room prompts |
-
-Three cooperating backend services divide facilitation responsibilities. Agent 1 handles participant dialogue, Agent 2 organizes groups and their instructions, and Agent 3 coordinates voting and workflow transitions. They share persistent process state and use language models for language-related tasks.
-
-## Requirements
-
-- **Node.js 22.x** and npm. The `.nvmrc` file selects Node.js 22 when using nvm.
-- An **OpenAI API key** with access to the chat and embedding models you configure. AI operations make billable API calls.
-- A writable local directory for the SQLite database, settings, and logs.
-- If native dependency installation requires compilation: Python 3 and a C/C++ build toolchain, such as Xcode Command Line Tools on macOS or the corresponding tools on Linux.
+CIME supports independent administrators running structured collective decisions. Administrators register and verify their email, configure a decision, invite participants by URL or QR code, and monitor the existing interview, grouping, discussion, voting and collective-review process.
 
 ## Local setup
 
-Run the following commands from the repository root.
-
-### 1. Install dependencies
-
-If you use nvm, run `nvm use` first. Then install the three applications using their committed lockfiles:
+Use Node.js 22.12 or newer within the 22.x release line. From the repository root:
 
 ```bash
 npm run install:all
-```
-
-### 2. Create local configuration
-
-```bash
 cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-cp admin-frontend/.env.example admin-frontend/.env
+node -e "const fs=require('node:fs'),crypto=require('node:crypto'),p='backend/.env'; fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace(/^JWT_SECRET=.*$/m,'JWT_SECRET='+crypto.randomBytes(32).toString('hex')))"
 ```
 
-Generate a unique JWT signing secret and write it directly into `backend/.env`:
+Set your own backend `OPENAI_API_KEY` and available chat models in `backend/.env`. The application can start without a model key, but AI-assisted stages require one. Never put secrets in browser `VITE_` variables.
 
-```bash
-node -e "const fs = require('node:fs'); const crypto = require('node:crypto'); const p = 'backend/.env'; fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=' + crypto.randomBytes(32).toString('hex')));"
-```
-
-Edit `backend/.env` and set:
-
-| Variable | Value to provide |
-| --- | --- |
-| `OPENAI_API_KEY` | Your API key; keep it on the backend only |
-| `OPENAI_MODEL` | The primary chat model available to your account |
-| `CHEAP_MODEL` | The default model for calls configured to use the lower-cost model |
-| `OPENAI_EMBEDDING_MODEL` | The embedding model; the template uses `text-embedding-3-small` |
-| `ADMIN_USERNAME` | Your initial administrator username |
-| `ADMIN_PASSWORD` | Your own password, at least 12 characters and no more than 72 UTF-8 bytes |
-
-The chat-model values in the template are application defaults, not a guarantee of availability on every API account. Set them to models your account can use. Task-specific model selections can subsequently be managed in the administrator interface. `CIME_API_KEY` is accepted as an alternative to `OPENAI_API_KEY` and takes precedence when both are set.
-
-The frontend configuration contains only public endpoint URLs. **Never put an API key, password, or JWT secret in a `VITE_` variable:** Vite embeds those values in browser code.
-
-### 3. Create the administrator account
-
-```bash
-npm run setup:admin
-```
-
-This initializes the database and creates the administrator using the credentials you supplied. It does not create demonstration participants, reset a decision, or overwrite an existing account. After it succeeds, remove `ADMIN_PASSWORD` from `backend/.env`; the account uses the password hash stored in the database.
-
-### 4. Start the application
-
-Open three terminals at the repository root and run one command in each:
-
-**Terminal 1 — backend**
+Start three terminals:
 
 ```bash
 npm run dev:backend
-```
-
-**Terminal 2 — participant interface**
-
-```bash
 npm run dev:frontend
-```
-
-**Terminal 3 — administrator interface**
-
-```bash
 npm run dev:admin
 ```
 
-| Service | Local address |
-| --- | --- |
-| Participant interface | http://localhost:5173 |
-| Administrator interface | http://localhost:5174 |
-| Backend health endpoint | http://localhost:4000/api/health |
+Open **http://localhost:5173**. Register an administrator account. Without SMTP in local development, the verification link is shown in the registration response and saved in `backend/data/mail/outbox.jsonl`. In production links are emailed. The old `setup:admin` command belongs to the legacy server and is not needed for platform accounts.
 
-Sign in to the administrator interface with the account you created. Press `Ctrl+C` in each terminal to stop its service. Persistent data remains available on the next start.
-
-## Start a deliberation
-
-1. Create participant accounts in the administrator interface and distribute their credentials privately.
-2. Define the main question, background context, deliberation topics, and initial voting options.
-3. Configure grouping, room sizes, timers, approval thresholds, and quorum.
-4. Start the decision process. Participants sign in to the participant interface and begin their private interviews.
-5. Monitor group discussions, voting, and collective review through the administrator interface.
-6. Inspect the resulting decisions and, if needed, request quality analysis or export the run.
-
-The built-in Simulation tab can exercise the same application with synthetic participants. Its controls and runtime services are included; standalone experiment automation and saved experiment results are not. Automated quality assessments and simulated behavior require interpretation and do not establish how human participants would respond.
-
-## Configuration and stored data
-
-The backend reads `backend/.env` when started through the commands above. Each Vite application reads its own `.env` file.
-
-| Setting | Purpose |
-| --- | --- |
-| `PORT` | Backend port; defaults to `4000` |
-| `CORS_ORIGIN` | Comma-separated allowed browser origins, including scheme and port |
-| `VITE_API_BASE_URL` | Backend API URL, including `/api` |
-| `VITE_SOCKET_URL` | Backend origin used for Socket.IO |
-| `VITE_BASE_PATH` | Frontend asset path; defaults to `/` |
-| `BOT_TRIGGER_HANDLE` | Bot mention handle; defaults to `@bot` |
-
-Restart a service after changing its configuration. Rebuild a frontend after changing values used by a deployed build.
-
-Runtime files are created locally and excluded from version control:
-
-- `backend/chat.db` and its SQLite sidecar files: accounts, conversations, ballots, and analysis records.
-- `backend/agent-config/settings.json`: current administrator settings.
-- `backend/agent-config/default-settings.json`: an administrator-saved settings snapshot, when used.
-- `backend/logs/`: decision logs.
-- Additional files under `backend/prompts/`: locally created room prompts.
-
-Agent instructions and templates under `backend/agent-config/` are application source files. Review changes before committing them, particularly after editing prompts in the administrator interface. Database records, model-call logs, and exported runs may contain participant information. Back up a stopped backend's database together with its configuration and prompts; keep backups outside the public repository.
-
-## Build and deployment
-
-Build both browser applications:
+For a single local server serving compiled interfaces:
 
 ```bash
 npm run build
 ```
 
-The static outputs are `frontend/dist/` and `admin-frontend/dist/`. Serve them using a web server or static hosting service. Start the API separately:
+Set `PUBLIC_APP_URL=http://localhost:4000` in `backend/.env`, then run `npm start` and open that address. The backend health endpoint is `/api/health`; the process workspace is served under `/admin/`.
+
+## Running an experiment
+
+1. Create a decision from **My decisions**. Enter its question, background, topics and initial voting options.
+2. Choose participant access: **anyone with the link**, **assigned username/password**, or **Prolific**. Configure the participant limit and optional Prolific completion URL.
+3. For assigned credentials, enter one username per line, generate passwords, and download the credential CSV. Keep it private; passwords are hashed and cannot be retrieved later.
+4. Open recruitment and share the invitation URL or download its QR code. Participants join a waiting room. Their private recovery code lets them reconnect without creating a second participant.
+5. Use **Open process workspace** to adjust the existing prompts, models, timing and grouping controls. Save the draft before returning to the invitation page.
+6. Start when the required participants have joined. Registration closes and the roster is frozen. The existing decision phases and voting rules continue.
+7. Monitor and export results in the process workspace. **Repeat as a new run** copies configuration and prompts into fresh storage; earlier participants and results remain in the original run. Simulations use a fresh run without human participants.
+
+Access mode and identity-verification settings lock after the first participant joins. Started runs retain their configuration. Session revocation disconnects a participant; it does not ban their identity from reconnecting. A rotated invitation invalidates the previous URL and QR code.
+
+## Experiment surveys
+
+Use **Edit surveys & view responses** on the experiment setup page, or **Surveys** in the process workspace. Enable a survey before the experiment, after it, or both. Each question can collect free text, a single choice, multiple choices, or an integer scale with labelled endpoints. Questions can be required or optional.
+
+The **Before experiment** and **After experiment** cards select independent questionnaires; the heading identifies the one you are editing. Switch between **Form editor** and **JSON editor** to edit the same questionnaire. The JSON editor supports paste, **Validate & format**, and **Copy JSON**. **Import JSON file** loads a questionnaire into the selected survey; **Download survey JSON** saves that questionnaire without participant responses. Changes are drafts until you click **Save survey changes**, which saves edits to both questionnaires.
+
+Each questionnaire file uses `"stage": "pre"` or `"stage": "post"` to prevent importing it into the wrong slot. Questions can be nested under groups, each with a shared heading and instruction shown once; legacy flat question arrays remain importable. See the editable [pre-survey example](examples/surveys/pre-survey.json) and [post-survey example](examples/surveys/post-survey.json) for all question types and branching. Keep question IDs stable when editing conditions. Invalid JSON or conditions are rejected before saving, and switching between surveys preserves their separate JSON drafts.
+
+To branch, set **Show this question** to an earlier question and choose the answer condition. For example, show question A when an answer **is Yes**, and question B when it **is not Yes**. Multiple selections support **includes/does not include**, and scales also support **is at least/is at most**. Conditional questions stay hidden until their source is answered; hidden answers are discarded if participants change branches. Text conditions compare the complete trimmed answer, with case preserved.
+
+Save both surveys before inviting participants. Pre-surveys appear in the waiting room, and every admitted participant must submit before the administrator can start the experiment. Post-surveys appear after the decision completes, before the Prolific completion link. Disabled surveys add no extra step; simulated participants skip surveys.
+
+Survey definitions lock after the first response or experiment start. **Repeat as a new run** copies the definitions into an editable fresh run without copying responses. The Surveys page shows submission counts and downloads a JSON file containing definitions, question IDs, answers, participant IDs/usernames, run IDs, and timestamps. Survey responses are also included in the complete run export. They are private research data visible to the owning administrator, not anonymous data. Participant drafts stay in that browser session until submission.
+
+## Storage and deployment
+
+Local development uses SQLite: `backend/data/platform.db` stores accounts, ownership and invitations, while `backend/data/runs/<run-id>/` stores each run's database, configuration, prompts and logs.
+
+Production uses PostgreSQL 16 or newer via `DATABASE_URL`, with shared metadata in `cime_platform` and one schema per run. A separate engine process per active run isolates workflow timers, sockets and in-memory state while preserving the decision engine. Run **one platform supervisor per database**. This implementation supports many registered admins and a bounded number of simultaneous experiments; it is not an unbounded distributed worker cluster.
+
+Production requires:
+
+- `NODE_ENV=production`, `DATABASE_URL`, `SMTP_URL`, a valid `MAIL_FROM`, and an HTTPS `PUBLIC_APP_URL`.
+- A reverse proxy serving the same origin, forwarding WebSockets, and terminating HTTPS. Set `TRUST_PROXY_HOPS` to the trusted proxy count and `CORS_ORIGIN` to the public origin.
+- Persistent `CIME_DATA_DIR` storage for prompts, settings, logs and import snapshots, even with PostgreSQL.
+- A stable, private `JWT_SECRET`: it signs sessions and encrypts stored Prolific API credentials. Back it up securely with the database and data directory.
+
+Build both frontends before starting the production backend. The server serves both builds. Do not expose engine worker ports; they bind to loopback and require an internal secret. Back up PostgreSQL and the data directory together. Stop the supervisor before restoring data or importing legacy state.
+
+Limits in `backend/.env.example` bound workers, runs, participants and model calls. Model-call budgets count attempts, including failed requests, per run and per admin per UTC day. They bound call counts, not monetary costs or token usage. Active runs restore persisted deadlines and simulation checkpoints after a restart; interrupted/archived runs do not resume.
+
+See [the platform implementation and Prolific guide](PLATFORM.md) for integration details, migration and limitations. The existing [CIME decision-engine guide](CIME_GUIDE.md) explains the deliberation rules and advanced controls; its legacy login/storage setup has been superseded by this README.
+
+## Verification
 
 ```bash
-npm run start:backend
+npm test
+npm run build
 ```
 
-For a remote deployment:
-
-- Set the frontend API and Socket.IO URLs to the externally reachable backend origin before building. Use HTTPS URLs when serving the interfaces over HTTPS.
-- Set `CORS_ORIGIN` to the actual participant and administrator origins.
-- Set `VITE_BASE_PATH` when serving an interface below a URL subdirectory.
-- Use a reverse proxy with WebSocket support for Socket.IO and keep the backend data directory persistent and writable.
-- Run one backend process. Multiple workers require additional coordination beyond the current shared SQLite state and in-process workflow scheduling.
-- Supply deployment secrets through the server environment or an untracked `.env` file. No shared accounts, API credentials, certificates, or server-specific deployment commands are included.
-
-Vite's development and preview servers are intended for local development and build inspection. The backend also supports direct TLS through `HTTPS_ENABLED`, `SSL_KEY_PATH`, `SSL_CERT_PATH`, and optional `SSL_CA_PATH`.
-
-## Troubleshooting
-
-- **Backend refuses to start because of `JWT_SECRET`:** generate the secret using the setup command above. At least 32 characters are required.
-- **Administrator login fails:** create the account first, use the credentials you supplied, and confirm the backend is using the intended database. Re-running setup does not reset an existing password.
-- **Model access or authentication errors:** check the backend API key and configured model IDs. Restart the backend after changing `.env`; also inspect any model overrides saved in the administrator interface.
-- **Browser cannot connect:** check the backend health endpoint, both frontend endpoint variables, and the allowed CORS origins. API URLs end in `/api`; Socket.IO URLs do not.
-- **A frontend port is occupied:** free the port or explicitly choose another port and update CORS. Development servers do not silently switch to another port.
-- **Native SQLite or bcrypt installation fails:** confirm Node.js 22 is selected and that the native build prerequisites are installed, then retry dependency installation.
+Tests use temporary data and no external model calls. They cover account lifecycle, ownership, access modes, isolation over HTTP and WebSockets, admission freezing, reconnection, exports, restart recovery, model budgets, legacy import and Prolific verification. PostgreSQL engine tests use PGlite by default; set `TEST_DATABASE_URL` to a dedicated disposable PostgreSQL database to test the actual PostgreSQL server and platform metadata. Never use a production database for tests.
 
 ## License
 
-CIME is open-source software licensed under the [MIT License](LICENSE). You may use, modify, and redistribute it, including commercially, provided you retain the copyright and license notice. Third-party dependencies remain subject to their respective licenses.
+[MIT](LICENSE).

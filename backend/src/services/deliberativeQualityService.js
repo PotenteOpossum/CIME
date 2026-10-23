@@ -1,12 +1,12 @@
-import crypto from 'crypto';
-import client, { resolveLlmModel } from './llm.js';
-import { env } from '../config/env.js';
-import { db } from '../config/db.js';
-import { getConfiguredModels } from './agentConfigService.js';
-import { shareAnalysis } from './sharedAnalysisService.js';
-import { throwIfWorkCancelled } from './workContext.js';
+import crypto from "crypto";
+import client, { resolveLlmModel } from "./llm.js";
+import { env } from "../config/env.js";
+import { db } from "../config/db.js";
+import { getConfiguredModels } from "./agentConfigService.js";
+import { shareAnalysis } from "./sharedAnalysisService.js";
+import { throwIfWorkCancelled } from "./workContext.js";
 
-const RUBRIC_VERSION = 'aqua_llm_embedding_v1';
+const RUBRIC_VERSION = "aqua_llm_embedding_v1";
 
 const DIMENSION_WEIGHTS = {
   participationEquality: 0.18,
@@ -14,7 +14,7 @@ const DIMENSION_WEIGHTS = {
   reciprocity: 0.16,
   respect: 0.16,
   constructiveness: 0.17,
-  epistemicOrientation: 0.15
+  epistemicOrientation: 0.15,
 };
 
 function clamp01(value) {
@@ -36,7 +36,10 @@ function safeParseJson(text) {
 }
 
 function countWords(text) {
-  return String(text || '').trim().split(/\s+/).filter(Boolean).length;
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
 }
 
 function calculateGini(values) {
@@ -51,7 +54,13 @@ function calculateGini(values) {
 }
 
 function cosineSimilarity(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0 || a.length !== b.length) {
+  if (
+    !Array.isArray(a) ||
+    !Array.isArray(b) ||
+    a.length === 0 ||
+    b.length === 0 ||
+    a.length !== b.length
+  ) {
     return 0;
   }
   let dot = 0;
@@ -73,7 +82,10 @@ function similarityToUnit(similarity) {
 }
 
 function hashText(value) {
-  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+  return crypto
+    .createHash("sha256")
+    .update(String(value || ""))
+    .digest("hex");
 }
 
 function normalizeScore(value) {
@@ -83,62 +95,90 @@ function normalizeScore(value) {
 }
 
 function normalizeRubric(raw) {
-  const parsed = raw && typeof raw === 'object' ? raw : {};
-  const indices = parsed.indices && typeof parsed.indices === 'object' ? parsed.indices : parsed;
+  const parsed = raw && typeof raw === "object" ? raw : {};
+  const indices =
+    parsed.indices && typeof parsed.indices === "object"
+      ? parsed.indices
+      : parsed;
   const read = (key) => normalizeScore(indices[key]);
 
   const normalized = {
-    relevance: read('relevance'),
-    factClaim: read('fact_claim'),
-    opinion: read('opinion'),
-    justification: read('justification'),
-    solutionProposal: read('solution_proposal'),
-    additionalKnowledge: read('additional_knowledge'),
-    genuineQuestion: read('genuine_question'),
-    referencingUsers: read('referencing_users'),
-    referencingContent: read('referencing_content'),
-    respect: read('respect'),
-    screaming: read('screaming'),
-    vulgarity: read('vulgarity'),
-    insult: read('insult'),
-    sarcasm: read('sarcasm'),
-    discrimination: read('discrimination'),
-    storytelling: read('storytelling'),
-    listening: read('listening'),
-    constructiveness: read('constructiveness'),
-    epistemicCare: read('epistemic_care')
+    relevance: read("relevance"),
+    factClaim: read("fact_claim"),
+    opinion: read("opinion"),
+    justification: read("justification"),
+    solutionProposal: read("solution_proposal"),
+    additionalKnowledge: read("additional_knowledge"),
+    genuineQuestion: read("genuine_question"),
+    referencingUsers: read("referencing_users"),
+    referencingContent: read("referencing_content"),
+    respect: read("respect"),
+    screaming: read("screaming"),
+    vulgarity: read("vulgarity"),
+    insult: read("insult"),
+    sarcasm: read("sarcasm"),
+    discrimination: read("discrimination"),
+    storytelling: read("storytelling"),
+    listening: read("listening"),
+    constructiveness: read("constructiveness"),
+    epistemicCare: read("epistemic_care"),
   };
 
   const rawConfidence = Number(parsed.confidence);
-  const confidence = Number.isFinite(rawConfidence) ? clamp01(rawConfidence) : 0.5;
+  const confidence = Number.isFinite(rawConfidence)
+    ? clamp01(rawConfidence)
+    : 0.5;
 
   return {
     indices: normalized,
-    source: 'llm+embeddings',
+    source: "llm+embeddings",
     confidence,
-    rationale: typeof parsed.rationale === 'string' ? parsed.rationale.slice(0, 600) : ''
+    rationale:
+      typeof parsed.rationale === "string"
+        ? parsed.rationale.slice(0, 600)
+        : "",
   };
 }
 
 function fallbackRuleAnalysis(messageText) {
-  const text = String(messageText || '');
+  const text = String(messageText || "");
   const lower = text.toLowerCase();
   const words = countWords(text);
-  const hasReason = /\b(because|since|therefore|due to|for example|for instance|reason|risk|cost|benefit|impact|trade[- ]?off)\b/i.test(text);
-  const hasReference = /\b(i agree|i disagree|you said|your point|building on|in response|what .* said|we|our)\b/i.test(text) || /@\w+/.test(text);
-  const hasConstructive = /\b(proposal|suggest|solution|compromise|combine|modify|mitigat|alternative|we could|let'?s|plan|option)\b/i.test(text);
-  const hasEvidence = /\b(data|evidence|research|study|fact|according to|example|case|percent|\d+([.,]\d+)?)\b/i.test(text);
-  const hasIncivility = /\b(stupid|idiot|dumb|shut up|trash|fuck|shit|asshole|bullshit)\b/i.test(text);
-  const allCaps = text.trim().length >= 12 && /[A-Z]/.test(text) && text.trim() === text.trim().toUpperCase();
+  const hasReason =
+    /\b(because|since|therefore|due to|for example|for instance|reason|risk|cost|benefit|impact|trade[- ]?off)\b/i.test(
+      text,
+    );
+  const hasReference =
+    /\b(i agree|i disagree|you said|your point|building on|in response|what .* said|we|our)\b/i.test(
+      text,
+    ) || /@\w+/.test(text);
+  const hasConstructive =
+    /\b(proposal|suggest|solution|compromise|combine|modify|mitigat|alternative|we could|let'?s|plan|option)\b/i.test(
+      text,
+    );
+  const hasEvidence =
+    /\b(data|evidence|research|study|fact|according to|example|case|percent|\d+([.,]\d+)?)\b/i.test(
+      text,
+    );
+  const hasIncivility =
+    /\b(stupid|idiot|dumb|shut up|trash|fuck|shit|asshole|bullshit)\b/i.test(
+      text,
+    );
+  const allCaps =
+    text.trim().length >= 12 &&
+    /[A-Z]/.test(text) &&
+    text.trim() === text.trim().toUpperCase();
   const repeatedPunctuation = /[!?]{3,}/.test(text);
 
   return {
-    source: 'fallback-rules',
+    source: "fallback-rules",
     indices: {
       relevance: words > 4 ? 0.6 : 0.25,
       factClaim: hasEvidence ? 0.75 : 0.2,
       opinion: words > 0 ? 0.6 : 0,
-      justification: clamp01((hasReason ? 0.75 : 0) + (words >= 18 ? 0.2 : words >= 10 ? 0.1 : 0)),
+      justification: clamp01(
+        (hasReason ? 0.75 : 0) + (words >= 18 ? 0.2 : words >= 10 ? 0.1 : 0),
+      ),
       solutionProposal: hasConstructive ? 0.75 : 0.15,
       additionalKnowledge: hasEvidence ? 0.65 : 0.15,
       genuineQuestion: /\?/.test(text) ? 0.65 : 0,
@@ -153,10 +193,11 @@ function fallbackRuleAnalysis(messageText) {
       storytelling: /\b(i|my|we|our)\b/i.test(lower) && words >= 18 ? 0.35 : 0,
       listening: hasReference ? 0.7 : 0.1,
       constructiveness: hasConstructive ? 0.75 : 0.15,
-      epistemicCare: hasEvidence || hasReason ? 0.65 : 0.25
+      epistemicCare: hasEvidence || hasReason ? 0.65 : 0.25,
     },
     confidence: 0,
-    rationale: 'Deterministic fallback used because LLM analysis was unavailable.'
+    rationale:
+      "Deterministic fallback used because LLM analysis was unavailable.",
   };
 }
 
@@ -167,68 +208,105 @@ function dimensionsFromRubric(rubric, embeddingMetrics) {
   const novelty = embeddingMetrics.semanticNovelty;
   const civilityPenalty = clamp01(
     i.screaming * 0.18 +
-    i.vulgarity * 0.24 +
-    i.insult * 0.28 +
-    i.sarcasm * 0.14 +
-    i.discrimination * 0.26
+      i.vulgarity * 0.24 +
+      i.insult * 0.28 +
+      i.sarcasm * 0.14 +
+      i.discrimination * 0.26,
   );
 
   const llmJustification = clamp01(
     i.justification * 0.62 +
-    i.factClaim * 0.14 +
-    i.additionalKnowledge * 0.14 +
-    i.relevance * 0.1
+      i.factClaim * 0.14 +
+      i.additionalKnowledge * 0.14 +
+      i.relevance * 0.1,
   );
   const llmReciprocity = clamp01(
     i.listening * 0.38 +
-    i.referencingUsers * 0.24 +
-    i.referencingContent * 0.24 +
-    i.genuineQuestion * 0.06 +
-    i.relevance * 0.08
+      i.referencingUsers * 0.24 +
+      i.referencingContent * 0.24 +
+      i.genuineQuestion * 0.06 +
+      i.relevance * 0.08,
   );
   const llmRespect = clamp01(i.respect * 0.72 + (1 - civilityPenalty) * 0.28);
   const llmConstructiveness = clamp01(
     i.constructiveness * 0.38 +
-    i.solutionProposal * 0.28 +
-    i.additionalKnowledge * 0.12 +
-    i.storytelling * 0.06 +
-    i.justification * 0.08 +
-    i.relevance * 0.08
+      i.solutionProposal * 0.28 +
+      i.additionalKnowledge * 0.12 +
+      i.storytelling * 0.06 +
+      i.justification * 0.08 +
+      i.relevance * 0.08,
   );
   const llmEpistemic = clamp01(
     i.epistemicCare * 0.34 +
-    i.factClaim * 0.22 +
-    i.justification * 0.2 +
-    i.additionalKnowledge * 0.16 +
-    i.relevance * 0.08
+      i.factClaim * 0.22 +
+      i.justification * 0.2 +
+      i.additionalKnowledge * 0.16 +
+      i.relevance * 0.08,
   );
 
   return {
     justification: round4(llmJustification * 0.85 + topical * 0.15),
     reciprocity: round4(llmReciprocity * 0.72 + responsiveness * 0.28),
     respect: round4(llmRespect),
-    constructiveness: round4(llmConstructiveness * 0.78 + topical * 0.12 + novelty * 0.1),
-    epistemicOrientation: round4(llmEpistemic * 0.82 + topical * 0.18)
+    constructiveness: round4(
+      llmConstructiveness * 0.78 + topical * 0.12 + novelty * 0.1,
+    ),
+    epistemicOrientation: round4(llmEpistemic * 0.82 + topical * 0.18),
   };
 }
 
-function readStoredAnalysis(messageId, contextHash, modelName, embeddingModelName) {
-  const row = db.prepare(`
+function readStoredAnalysis(
+  messageId,
+  contextHash,
+  modelName,
+  embeddingModelName,
+) {
+  const row = db
+    .prepare(
+      `
     SELECT analysis_json, embedding_json, context_hash, model_name, embedding_model_name
     FROM message_deliberative_quality_analyses
     WHERE message_id = ?
-  `).get(messageId);
+  `,
+    )
+    .get(messageId);
   if (!row || row.context_hash !== contextHash) return null;
-  if (row.model_name !== modelName || row.embedding_model_name !== embeddingModelName) return null;
+  if (
+    row.model_name !== modelName ||
+    row.embedding_model_name !== embeddingModelName
+  )
+    return null;
   const analysis = safeParseJson(row.analysis_json);
   const embedding = safeParseJson(row.embedding_json);
-  if (!analysis || !analysis.dimensions || !Array.isArray(embedding) || embedding.length === 0 || !embedding.every(Number.isFinite) || !embedding.some(value => value !== 0)) return null;
-  if (analysis.source !== 'llm+embeddings' || analysis.embeddingStatus === 'unavailable') return null;
+  if (
+    !analysis ||
+    !analysis.dimensions ||
+    !Array.isArray(embedding) ||
+    embedding.length === 0 ||
+    !embedding.every(Number.isFinite) ||
+    !embedding.some((value) => value !== 0)
+  )
+    return null;
+  if (
+    analysis.source !== "llm+embeddings" ||
+    analysis.embeddingStatus === "unavailable"
+  )
+    return null;
   return { ...analysis, embedding };
 }
 
-function storeAnalysis({ messageId, userId, roomId, analysis, embedding, contextHash, modelName, embeddingModelName }) {
-  db.prepare(`
+function storeAnalysis({
+  messageId,
+  userId,
+  roomId,
+  analysis,
+  embedding,
+  contextHash,
+  modelName,
+  embeddingModelName,
+}) {
+  db.prepare(
+    `
     INSERT INTO message_deliberative_quality_analyses (
       message_id,
       user_id,
@@ -249,16 +327,17 @@ function storeAnalysis({ messageId, userId, roomId, analysis, embedding, context
       model_name = excluded.model_name,
       embedding_model_name = excluded.embedding_model_name,
       created_at = excluded.created_at
-  `).run(
+  `,
+  ).run(
     messageId,
     userId,
     roomId,
     JSON.stringify(analysis),
     JSON.stringify(embedding || []),
     contextHash,
-    modelName || '',
-    embeddingModelName || '',
-    new Date().toISOString()
+    modelName || "",
+    embeddingModelName || "",
+    new Date().toISOString(),
   );
 }
 
@@ -267,18 +346,18 @@ async function embedTexts(texts, roomId, modelName) {
   try {
     const response = await client.embeddings.create({
       model: modelName,
-      input: texts.map((text) => String(text || '').slice(0, 8000)),
+      input: texts.map((text) => String(text || "").slice(0, 8000)),
       metadata: {
-        caller: 'deliberative_quality_embedding',
+        caller: "deliberative_quality_embedding",
         modelResolved: true,
-        roomId: roomId || null
-      }
+        roomId: roomId || null,
+      },
     });
     const vectors = Array.isArray(response.data) ? response.data : [];
     return texts.map((_, index) => vectors[index]?.embedding || []);
   } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    console.error('Failed to compute deliberative quality embeddings:', err);
+    if (err.name === "AbortError") throw err;
+    console.error("Failed to compute deliberative quality embeddings:", err);
     return texts.map(() => []);
   }
 }
@@ -319,74 +398,109 @@ Return strict JSON only:
 }
 
 Context:
-Global question: ${context.globalQuestion || ''}
-Room: ${context.roomName || ''}
-Current poll/question: ${context.currentPollQuestion || ''}
+Global question: ${context.globalQuestion || ""}
+Room: ${context.roomName || ""}
+Current poll/question: ${context.currentPollQuestion || ""}
 Current poll options:
-${Array.isArray(context.currentPollOptions) ? context.currentPollOptions.map((opt) => `- ${opt}`).join('\n') : ''}
+${Array.isArray(context.currentPollOptions) ? context.currentPollOptions.map((opt) => `- ${opt}`).join("\n") : ""}
 
 Recent previous messages:
-${context.recentMessages || ''}
+${context.recentMessages || ""}
 
 Message to assess:
-${row.text || ''}`;
+${row.text || ""}`;
 
   try {
     const response = await client.chat.completions.create({
       model: modelName,
       temperature: 0,
-      response_format: { type: 'json_object' },
+      response_format: { type: "json_object" },
       metadata: {
-        caller: 'deliberative_quality',
+        caller: "deliberative_quality",
         modelResolved: true,
-        roomId: row.room_id || null
+        roomId: row.room_id || null,
       },
       messages: [
         {
-          role: 'system',
-          content: prompt
-        }
-      ]
+          role: "system",
+          content: prompt,
+        },
+      ],
     });
-    const rawText = response.choices?.[0]?.message?.content || '{}';
+    const rawText = response.choices?.[0]?.message?.content || "{}";
     return normalizeRubric(safeParseJson(rawText) || {});
   } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    console.error('Failed to analyze deliberative quality with LLM:', err);
+    if (err.name === "AbortError") throw err;
+    console.error("Failed to analyze deliberative quality with LLM:", err);
     return fallbackRuleAnalysis(row.text);
   }
 }
 
-async function analyzeOneMessage(row, context, previousAnalyses) {
+async function analyzeOneMessage(
+  row,
+  context,
+  previousAnalyses,
+  allowCompute = true,
+) {
   throwIfWorkCancelled();
   const contextText = [
     RUBRIC_VERSION,
-    row.text || '',
-    context.globalQuestion || '',
-    context.roomName || '',
-    context.currentPollQuestion || '',
-    Array.isArray(context.currentPollOptions) ? context.currentPollOptions.join('|') : '',
-    context.recentMessages || ''
-  ].join('\n');
+    row.text || "",
+    context.globalQuestion || "",
+    context.roomName || "",
+    context.currentPollQuestion || "",
+    Array.isArray(context.currentPollOptions)
+      ? context.currentPollOptions.join("|")
+      : "",
+    context.recentMessages || "",
+  ].join("\n");
   const contextHash = hashText(contextText);
-  const modelName = resolveLlmModel('deliberative_quality', getConfiguredModels().primaryModel);
-  const embeddingModelName = resolveLlmModel('deliberative_quality_embedding', env.embeddingModel);
-  const key = JSON.stringify(['quality', row.id, contextHash, modelName, embeddingModelName]);
+  const modelName = resolveLlmModel(
+    "deliberative_quality",
+    getConfiguredModels().primaryModel,
+  );
+  const embeddingModelName = resolveLlmModel(
+    "deliberative_quality_embedding",
+    env.embeddingModel,
+  );
+  const key = JSON.stringify([
+    "quality",
+    row.id,
+    contextHash,
+    modelName,
+    embeddingModelName,
+  ]);
+  if (!allowCompute)
+    return readStoredAnalysis(
+      row.id,
+      contextHash,
+      modelName,
+      embeddingModelName,
+    );
   return shareAnalysis(key, async () => {
     throwIfWorkCancelled();
-    const cached = readStoredAnalysis(row.id, contextHash, modelName, embeddingModelName);
+    const cached = readStoredAnalysis(
+      row.id,
+      contextHash,
+      modelName,
+      embeddingModelName,
+    );
     if (cached) return cached;
 
     const contextEmbeddingText = [
-      context.globalQuestion || '',
-      context.roomName || '',
-      context.currentPollQuestion || '',
-      Array.isArray(context.currentPollOptions) ? context.currentPollOptions.join(' ') : ''
-    ].filter(Boolean).join('\n');
+      context.globalQuestion || "",
+      context.roomName || "",
+      context.currentPollQuestion || "",
+      Array.isArray(context.currentPollOptions)
+        ? context.currentPollOptions.join(" ")
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
     const [messageEmbedding, contextEmbedding] = await embedTexts(
-      [row.text || '', contextEmbeddingText || contextText],
+      [row.text || "", contextEmbeddingText || contextText],
       row.room_id,
-      embeddingModelName
+      embeddingModelName,
     );
 
     const previousEmbeddings = previousAnalyses
@@ -395,33 +509,52 @@ async function analyzeOneMessage(row, context, previousAnalyses) {
     const previousSimilarities = previousEmbeddings
       .map((embedding) => cosineSimilarity(messageEmbedding, embedding))
       .filter((value) => Number.isFinite(value));
-    const maxPreviousSimilarity = previousSimilarities.length > 0
-      ? Math.max(...previousSimilarities)
-      : 0;
-    const avgPreviousSimilarity = previousSimilarities.length > 0
-      ? previousSimilarities.reduce((sum, value) => sum + value, 0) / previousSimilarities.length
-      : 0;
+    const maxPreviousSimilarity =
+      previousSimilarities.length > 0 ? Math.max(...previousSimilarities) : 0;
+    const avgPreviousSimilarity =
+      previousSimilarities.length > 0
+        ? previousSimilarities.reduce((sum, value) => sum + value, 0) /
+          previousSimilarities.length
+        : 0;
 
     const embeddingMetrics = {
-      topicalRelevance: round4(similarityToUnit(cosineSimilarity(messageEmbedding, contextEmbedding))),
-      semanticResponsiveness: previousSimilarities.length > 0 ? round4(similarityToUnit(maxPreviousSimilarity)) : 0.5,
-      semanticNovelty: previousSimilarities.length > 0 ? round4(1 - similarityToUnit(avgPreviousSimilarity)) : 0.5
+      topicalRelevance: round4(
+        similarityToUnit(cosineSimilarity(messageEmbedding, contextEmbedding)),
+      ),
+      semanticResponsiveness:
+        previousSimilarities.length > 0
+          ? round4(similarityToUnit(maxPreviousSimilarity))
+          : 0.5,
+      semanticNovelty:
+        previousSimilarities.length > 0
+          ? round4(1 - similarityToUnit(avgPreviousSimilarity))
+          : 0.5,
     };
 
     throwIfWorkCancelled();
     const rubric = await callRubricLlm({ row, context, modelName });
     const dimensions = dimensionsFromRubric(rubric, embeddingMetrics);
-    const validVector = (vector) => Array.isArray(vector) && vector.length > 0 && vector.every(Number.isFinite) && vector.some(value => value !== 0);
-    const embeddingsAvailable = validVector(messageEmbedding) && validVector(contextEmbedding) && messageEmbedding.length === contextEmbedding.length;
+    const validVector = (vector) =>
+      Array.isArray(vector) &&
+      vector.length > 0 &&
+      vector.every(Number.isFinite) &&
+      vector.some((value) => value !== 0);
+    const embeddingsAvailable =
+      validVector(messageEmbedding) &&
+      validVector(contextEmbedding) &&
+      messageEmbedding.length === contextEmbedding.length;
     const analysis = {
       rubricVersion: RUBRIC_VERSION,
-      source: rubric.source === 'llm+embeddings' && !embeddingsAvailable ? 'llm-without-embeddings' : (rubric.source || 'unknown'),
-      embeddingStatus: embeddingsAvailable ? 'complete' : 'unavailable',
+      source:
+        rubric.source === "llm+embeddings" && !embeddingsAvailable
+          ? "llm-without-embeddings"
+          : rubric.source || "unknown",
+      embeddingStatus: embeddingsAvailable ? "complete" : "unavailable",
       indices: rubric.indices,
       confidence: rubric.confidence,
       rationale: rubric.rationale,
       embeddingMetrics,
-      dimensions
+      dimensions,
     };
 
     storeAnalysis({
@@ -432,7 +565,7 @@ async function analyzeOneMessage(row, context, previousAnalyses) {
       embedding: messageEmbedding,
       contextHash,
       modelName,
-      embeddingModelName
+      embeddingModelName,
     });
 
     return { ...analysis, embedding: messageEmbedding };
@@ -442,14 +575,15 @@ async function analyzeOneMessage(row, context, previousAnalyses) {
 export async function analyzeDeliberativeMessagesWithLLM({
   messageRows,
   userIds,
-  getContextForMessage = () => ({})
+  allowCompute = true,
+  getContextForMessage = () => ({}),
 }) {
   const rows = Array.isArray(messageRows) ? messageRows : [];
   const participantIds = Array.isArray(userIds) ? userIds : [];
   const messageCount = rows.length;
   if (messageCount === 0) {
     return {
-      score: 0,
+      score: null,
       messageCount: 0,
       dimensions: {
         participationEquality: 0,
@@ -457,22 +591,25 @@ export async function analyzeDeliberativeMessagesWithLLM({
         reciprocity: 0,
         respect: 0,
         constructiveness: 0,
-        epistemicOrientation: 0
+        epistemicOrientation: 0,
       },
       weights: DIMENSION_WEIGHTS,
-      method: 'aqua-inspired-llm-embeddings',
-      analyzedMessages: 0
+      method: "no-eligible-messages",
+      analyzedMessages: 0,
     };
   }
 
   const countsByUser = {};
   for (const uid of participantIds) countsByUser[uid] = 0;
   for (const row of rows) {
-    if (countsByUser[row.sender_id] !== undefined) countsByUser[row.sender_id]++;
+    if (countsByUser[row.sender_id] !== undefined)
+      countsByUser[row.sender_id]++;
   }
 
   const sortedRows = [...rows].sort((a, b) => {
-    const timeDiff = new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime();
+    const timeDiff =
+      new Date(a.timestamp || 0).getTime() -
+      new Date(b.timestamp || 0).getTime();
     return timeDiff || Number(a.id || 0) - Number(b.id || 0);
   });
 
@@ -483,31 +620,51 @@ export async function analyzeDeliberativeMessagesWithLLM({
     const roomPrevious = previousAnalysesByRoom.get(row.room_id) || [];
     const recentPrevious = roomPrevious.slice(-8);
     const context = getContextForMessage(row) || {};
-    const analysis = await analyzeOneMessage(row, context, recentPrevious);
+    const analysis = await analyzeOneMessage(
+      row,
+      context,
+      recentPrevious,
+      allowCompute,
+    );
+    if (!analysis)
+      return {
+        score: null,
+        messageCount,
+        dimensions: {},
+        weights: DIMENSION_WEIGHTS,
+        method: "not-computed",
+        analyzedMessages: analyses.length,
+      };
     analyses.push(analysis);
     previousAnalysesByRoom.set(row.room_id, [...roomPrevious, analysis]);
   }
 
-  const participationEquality = participantIds.length > 0
-    ? 1 - calculateGini(participantIds.map((uid) => countsByUser[uid] || 0))
-    : 0;
+  const participationEquality =
+    participantIds.length > 0
+      ? 1 - calculateGini(participantIds.map((uid) => countsByUser[uid] || 0))
+      : 0;
 
   const average = (key) => {
     if (analyses.length === 0) return 0;
-    return analyses.reduce((sum, item) => sum + (Number(item.dimensions?.[key]) || 0), 0) / analyses.length;
+    return (
+      analyses.reduce(
+        (sum, item) => sum + (Number(item.dimensions?.[key]) || 0),
+        0,
+      ) / analyses.length
+    );
   };
 
   const dimensions = {
     participationEquality: round4(participationEquality),
-    justification: round4(average('justification')),
-    reciprocity: round4(average('reciprocity')),
-    respect: round4(average('respect')),
-    constructiveness: round4(average('constructiveness')),
-    epistemicOrientation: round4(average('epistemicOrientation'))
+    justification: round4(average("justification")),
+    reciprocity: round4(average("reciprocity")),
+    respect: round4(average("respect")),
+    constructiveness: round4(average("constructiveness")),
+    epistemicOrientation: round4(average("epistemicOrientation")),
   };
   const score = Object.entries(DIMENSION_WEIGHTS).reduce(
     (sum, [key, weight]) => sum + dimensions[key] * weight,
-    0
+    0,
   );
 
   return {
@@ -515,12 +672,12 @@ export async function analyzeDeliberativeMessagesWithLLM({
     messageCount,
     dimensions,
     weights: DIMENSION_WEIGHTS,
-    method: 'aqua-inspired-llm-embeddings',
+    method: "aqua-inspired-llm-embeddings",
     analyzedMessages: analyses.length,
     sourceBreakdown: analyses.reduce((acc, item) => {
-      const source = item.source || 'unknown';
+      const source = item.source || "unknown";
       acc[source] = (acc[source] || 0) + 1;
       return acc;
-    }, {})
+    }, {}),
   };
 }

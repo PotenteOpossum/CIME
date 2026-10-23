@@ -1,3 +1,4 @@
+import { participantRunId, sessionKey } from '../platform/client.js';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
@@ -5,7 +6,7 @@ import { apiRequest } from '../api/client.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import cimeLogo from '../img/CIME_LOGO.png';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
 export default function AgentsPage() {
   const { token, user } = useAuth();
@@ -26,7 +27,7 @@ export default function AgentsPage() {
 
   useEffect(() => {
     const socket = io(SOCKET_URL, {
-      auth: { token },
+      auth: { token, runId: participantRunId },
       transports: ['websocket', 'polling']
     });
     socket.on('decision_process_updated', () => loadDecision().catch(() => {}));

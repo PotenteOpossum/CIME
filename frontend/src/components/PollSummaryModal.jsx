@@ -127,7 +127,7 @@ export default function PollSummaryModal({ poll, onClose, canDismiss = true }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
-      <div className="w-full max-w-2xl rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1e1f20] border border-gray-200 dark:border-gray-800 flex flex-col max-h-[85vh] transition-colors duration-300">
+      <div className="w-full max-w-2xl rounded-3xl bg-white p-8 shadow-xl dark:bg-[#1c1a17] border border-gray-200 dark:border-gray-800 flex flex-col max-h-[85vh] transition-colors duration-300">
         <div className="flex items-center gap-3 mb-6 border-b border-gray-200 dark:border-gray-800 pb-4 shrink-0">
           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400">
             📊
@@ -142,7 +142,7 @@ export default function PollSummaryModal({ poll, onClose, canDismiss = true }) {
 
         <div ref={scrollRef} onScroll={checkScroll} className="flex-1 overflow-y-auto pr-2 mb-6 space-y-4">
           {/* Question */}
-          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#282a2c]/50">
+          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#2d2924]/50">
             <p className="text-sm font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-2">
               Question
             </p>
@@ -152,7 +152,7 @@ export default function PollSummaryModal({ poll, onClose, canDismiss = true }) {
           </div>
 
           {/* Consensus Analysis */}
-          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#282a2c]/50">
+          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#2d2924]/50">
             <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">
               Consensus Analysis
             </p>
@@ -165,7 +165,7 @@ export default function PollSummaryModal({ poll, onClose, canDismiss = true }) {
           </div>
 
           {/* Top Options */}
-          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#282a2c]/50">
+          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#2d2924]/50">
             <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-3">
               {optionsToShow.length > 2 ? 'Top 3 Options' : 'Top Options'}
             </p>
@@ -223,7 +223,7 @@ export default function PollSummaryModal({ poll, onClose, canDismiss = true }) {
           )}
 
           {/* Additional Context */}
-          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#282a2c]/50">
+          <div className="rounded-3xl border border-gray-200 bg-gray-50/50 p-5 dark:border-gray-700 dark:bg-[#2d2924]/50">
             <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">
               Summary
             </p>

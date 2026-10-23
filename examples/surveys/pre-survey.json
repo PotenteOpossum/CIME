@@ -1,0 +1,58 @@
+{
+  "stage": "pre",
+  "enabled": true,
+  "title": "Before we begin",
+  "description": "Please tell us about your experience and expectations.",
+  "questions": [
+    {
+      "id": "experience",
+      "type": "single_choice",
+      "label": "Have you taken part in a group decision before?",
+      "required": true,
+      "options": ["Yes", "No"]
+    },
+    {
+      "id": "describe_experience",
+      "type": "text",
+      "label": "What was that experience like?",
+      "required": true,
+      "condition": {
+        "questionId": "experience",
+        "operator": "equals",
+        "value": "Yes"
+      }
+    },
+    {
+      "id": "expectations",
+      "type": "text",
+      "label": "What do you expect from your first group decision?",
+      "required": true,
+      "condition": {
+        "questionId": "experience",
+        "operator": "not_equals",
+        "value": "Yes"
+      }
+    },
+    {
+      "id": "interests",
+      "type": "multiple_choice",
+      "label": "What interests you about this experiment?",
+      "required": false,
+      "options": [
+        "Learning about the topic",
+        "Hearing other perspectives",
+        "Reaching a decision"
+      ]
+    },
+    {
+      "id": "confidence",
+      "type": "scale",
+      "label": "How confident do you feel about sharing your views?",
+      "required": true,
+      "min": 1,
+      "max": 5,
+      "minLabel": "Not confident",
+      "maxLabel": "Very confident"
+    }
+  ]
+}

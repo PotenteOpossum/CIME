@@ -6,13 +6,13 @@
   html {
     scroll-behavior: smooth;
   }
-  
+
   body {
-    @apply bg-white text-gray-800 min-h-screen selection:bg-blue-500/30 transition-colors duration-300;
+    @apply bg-gray-100 text-gray-950 min-h-screen selection:bg-blue-500/30 transition-colors duration-300;
   }
-  
+
   .dark body {
-    @apply bg-[#131314] text-gray-100;
+    @apply bg-[#222e2b] text-gray-100;
   }
 }
 
@@ -30,4 +30,94 @@
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     @apply bg-slate-600/50;
   }
+}
+
+/* Participant pages, reports, authentication and shared dialogs use the same palette. */
+:root {
+  --cime-paper: #f7f5ef;
+  --cime-sand: #ffffff;
+  --cime-ink: #222e2b;
+  --cime-accent: #c8753b;
+}
+body {
+  background-color: var(--cime-paper);
+  color: var(--cime-ink);
+}
+#root .bg-white {
+  background-color: #ffffff;
+}
+#root [class*="bg-white/"] {
+  background-color: rgb(255 255 255 / 0.85);
+}
+#root input[type="range"],
+#root input[type="checkbox"] {
+  accent-color: var(--cime-accent);
+}
+::selection {
+  background: #e2c6a3;
+  color: #222e2b;
+}
+
+.dark body {
+  background-color: #222e2b;
+  color: #f7f5ef;
+}
+html.dark #root .bg-white {
+  background-color: #1c2822;
+}
+html.dark #root [class*="bg-white/"] {
+  background-color: rgb(28 40 34 / 0.85);
+}
+
+/* Explicit participant controls also update an already-running Vite session,
+   whose Tailwind configuration may still hold the previous blue palette. */
+#root
+  :is(
+    .bg-blue-500,
+    .bg-blue-600,
+    .bg-blue-700,
+    .bg-indigo-500,
+    .bg-indigo-600,
+    .bg-indigo-700
+  ) {
+  background-color: #222e2b;
+  color: #f7f5ef;
+}
+#root
+  :is(button, a):is(
+    .hover\:bg-blue-700,
+    .hover\:bg-indigo-500,
+    .hover\:bg-blue-600
+  ):hover {
+  background-color: #3c4d46;
+  color: #f7f5ef;
+}
+#root :is(.bg-indigo-100, .bg-blue-100, .bg-indigo-50, .bg-blue-50) {
+  background-color: #ffffff;
+}
+#root
+  :is(
+    .text-indigo-700,
+    .text-indigo-600,
+    .text-indigo-500,
+    .text-blue-600,
+    .text-blue-700
+  ) {
+  color: #28796b;
+}
+#root :is(.border-indigo-200, .border-blue-200) {
+  border-color: #dce1d8;
+}
+#root :is(.border-indigo-600, .border-blue-600) {
+  border-color: #222e2b;
+}
+#root :is(textarea, input, button):focus-visible {
+  --tw-ring-color: #c8753b;
+}
+#root :is(.focus\:ring-blue-500, .focus\:ring-indigo-500):focus {
+  --tw-ring-color: #c8753b;
+}
+html.dark #root :is(.dark\:bg-blue-500, .dark\:bg-indigo-600) {
+  background-color: #c8753b;
+  color: #222e2b;
 }

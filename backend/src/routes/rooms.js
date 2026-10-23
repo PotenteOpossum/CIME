@@ -13,7 +13,9 @@ import {
   recordConvergenceAgreement,
   submitContinuousSuggestion,
   announceContinuousVoteChange,
-  recordContinuousVoteAudit
+  recordContinuousVoteAudit,
+  ensureLiveOption,
+  normalizeLiveOption
 } from '../services/agent3Service.js';
 import { getDecisionSettings } from '../services/agentConfigService.js';
 
@@ -73,8 +75,8 @@ export function getPollsForRoom(roomId, userId) {
       `
       SELECT id, room_id, question, show_results, is_closed, mandatory, expires_at, created_at, poll_type, poll_stage, has_consensus, suggestion, chain_stage, minimum_live_until, stability_started_at, review_until
       FROM polls
-      WHERE room_id = ?
-      ORDER BY id DESC
+      WHERE room_id = ? AND closed_reason <> 'personal_poll_queued'
+      ORDER BY is_closed ASC, id DESC
     `
     )
     .all(roomId)
@@ -177,7 +179,7 @@ export function getPollsForRoom(roomId, userId) {
         if (v.option_id === otherOptionId && v.custom_option_text && v.custom_option_text.trim() !== '') {
           const text = v.custom_option_text.trim();
           if (showCustomOptions) {
-            let existing = finalOptions.find((o) => o.option_text === text);
+            let existing = finalOptions.find((o) => normalizeLiveOption(o.option_text) === normalizeLiveOption(text));
             if (!existing) {
               existing = { id: `custom-${text}`, option_text: text };
               finalOptions.push(existing);
@@ -209,7 +211,7 @@ export function getPollsForRoom(roomId, userId) {
         if (cv.option_id === otherOptionId && cv.custom_option_text && cv.custom_option_text.trim() !== '') {
           const text = cv.custom_option_text.trim();
           if (showCustomOptions) {
-            let existing = finalOptions.find((o) => o.option_text === text);
+            let existing = finalOptions.find((o) => normalizeLiveOption(o.option_text) === normalizeLiveOption(text));
             if (!existing) {
               existing = { id: `custom-${text}`, option_text: text };
               finalOptions.push(existing);
@@ -715,11 +717,12 @@ router.get('/:roomId/convergence-status', (req, res) => {
 
 router.post('/polls/:pollId/vote', async (req, res) => {
   const pollId = Number(req.params.pollId);
-  const { optionId, optionIds, rankedOptions, customOptionText, swipeVotes, requestId } = req.body;
+  const { optionId, optionIds, rankedOptions, customOptionText, swipeVotes, requestId, proposalMessageId } = req.body;
   if (!Number.isInteger(pollId)) {
     return res.status(400).json({ error: 'Invalid pollId' });
   }
   if (
+    !Number.isInteger(proposalMessageId) &&
     !Number.isInteger(optionId) &&
     (!Array.isArray(rankedOptions) || rankedOptions.length === 0) &&
     (!Array.isArray(optionIds) || optionIds.length === 0) &&
@@ -729,7 +732,7 @@ router.post('/polls/:pollId/vote', async (req, res) => {
     return res.status(400).json({ error: 'Invalid optionId, optionIds, rankedOptions, swipeVotes, or customOptionText' });
   }
 
-  const poll = db.prepare('SELECT id, room_id, is_closed, expires_at, poll_type, poll_stage FROM polls WHERE id = ?').get(pollId);
+  const poll = db.prepare('SELECT id, room_id, question, is_closed, expires_at, poll_type, poll_stage FROM polls WHERE id = ?').get(pollId);
   if (!poll) return res.status(404).json({ error: 'Poll not found' });
   if (poll.is_closed === 1 || (poll.expires_at && poll.expires_at <= nowIso())) {
     return res.status(400).json({ error: 'Poll is closed' });
@@ -741,20 +744,35 @@ router.post('/polls/:pollId/vote', async (req, res) => {
     return res.status(403).json({ error: 'Admins are ghost observers and cannot vote.' });
   }
 
+  let proposalText = null;
+  if (Number.isInteger(proposalMessageId)) {
+    const message = db.prepare('SELECT text FROM messages WHERE id = ? AND room_id = ? AND sender_id IS NULL').get(proposalMessageId, poll.room_id);
+    try {
+      const marker = '[LiveVoteProposal=';
+      const at = message?.text.lastIndexOf(marker) ?? -1;
+      const proposal = at >= 0 && message.text.endsWith(']') ? JSON.parse(message.text.slice(at + marker.length, -1)) : null;
+      if (!proposal || proposal.pollId !== pollId || typeof proposal.optionText !== 'string') throw new Error();
+      proposalText = proposal.optionText;
+    } catch {
+      return res.status(400).json({ error: 'This proposal does not belong to this poll.' });
+    }
+    if (poll.poll_type !== 'continuous') return res.status(400).json({ error: 'This proposal is only available during live voting.' });
+  }
+
   if (poll.poll_type === 'continuous' || poll.poll_stage === 'continuous') {
     // Older clients submitted the single selection as optionIds. Accept exactly
     // one ID from either shape, but never silently turn a multi-select payload
     // into a live vote.
-    const continuousOptionId = Number.isInteger(optionId)
+    let continuousOptionId = Number.isInteger(optionId)
       ? optionId
       : (Array.isArray(optionIds) && optionIds.length === 1 && Number.isInteger(optionIds[0]) ? optionIds[0] : null);
-    if (!Number.isInteger(continuousOptionId)) {
+    if (!Number.isInteger(continuousOptionId) && !proposalText) {
       return res.status(400).json({ error: 'Continuous voting requires one option.' });
     }
-    const option = db.prepare('SELECT id, option_text FROM poll_options WHERE id = ? AND poll_id = ?').get(continuousOptionId, pollId);
+    const option = proposalText ? { option_text: 'Other' } : db.prepare('SELECT id, option_text FROM poll_options WHERE id = ? AND poll_id = ?').get(continuousOptionId, pollId);
     if (!option) return res.status(400).json({ error: 'Option does not belong to this poll' });
 
-    const trimmedCustomOptionText = typeof customOptionText === 'string' ? customOptionText.trim() : '';
+    const trimmedCustomOptionText = proposalText || (typeof customOptionText === 'string' ? customOptionText.trim() : '');
     const isOther = String(option.option_text).trim().toLowerCase() === 'other';
     if (isOther && !trimmedCustomOptionText) {
       return res.status(400).json({ error: 'Please describe your option.' });
@@ -763,7 +781,7 @@ router.post('/polls/:pollId/vote', async (req, res) => {
       return res.status(400).json({ error: 'A write-in description can only be submitted with Other.' });
     }
     let validatedCustomOptionText = trimmedCustomOptionText;
-    if (isOther && validatedCustomOptionText) {
+    if (isOther && validatedCustomOptionText && !proposalText) {
       const validity = await evaluateResponseValidity({
         text: validatedCustomOptionText,
         questionText: poll.question,
@@ -775,6 +793,11 @@ router.post('/polls/:pollId/vote', async (req, res) => {
     }
     const timestamp = nowIso();
     const replaceVote = db.transaction(() => {
+      const current = db.prepare('SELECT is_closed, expires_at FROM polls WHERE id = ?').get(pollId);
+      if (current.is_closed || (current.expires_at && current.expires_at <= nowIso())) throw new Error('Poll is closed');
+      // Option reuse and vote replacement commit together. Two clicks cannot create
+      // two copies, and each participant always has exactly one current vote.
+      if (isOther) continuousOptionId = ensureLiveOption(pollId, validatedCustomOptionText);
       db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').run(pollId, req.user.id);
       db.prepare(`
         INSERT INTO poll_votes (poll_id, option_id, user_id, created_at, rank, custom_option_text)
@@ -785,7 +808,8 @@ router.post('/polls/:pollId/vote', async (req, res) => {
           .run(validatedCustomOptionText, pollId, continuousOptionId, req.user.id);
       }
     });
-    replaceVote();
+    try { replaceVote(); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
     recordContinuousVoteAudit({
       pollId,
       userId: req.user.id,
@@ -819,9 +843,13 @@ router.post('/polls/:pollId/vote', async (req, res) => {
       roomContext: `Poll ${pollId} in room ${poll.room_id}`
     });
     if (!validity.is_valid) {
-      validatedCustomOptionText = '';
+      return res.status(400).json({ error: 'That option does not appear to be a meaningful response. Please revise it; your previous vote has been kept.' });
     }
   }
+
+  // Validation may await a model while the voting timer expires.
+  const currentPoll = db.prepare('SELECT is_closed, expires_at FROM polls WHERE id = ?').get(pollId);
+  if (currentPoll.is_closed || (currentPoll.expires_at && currentPoll.expires_at <= nowIso())) return res.status(400).json({ error: 'Poll is closed' });
 
   // Handle swipe votes separately from normal poll votes
   if (poll.poll_type === 'swipe') {
@@ -829,8 +857,12 @@ router.post('/polls/:pollId/vote', async (req, res) => {
       !vote || !Number.isInteger(vote.optionId) || typeof vote.direction !== 'string' || !['left', 'right'].includes(vote.direction.toLowerCase()))) {
       return res.status(400).json({ error: 'Invalid swipe replacement' });
     }
+    const allowedIds = new Set(db.prepare('SELECT id FROM poll_options WHERE poll_id = ?').all(pollId).map((option) => option.id));
+    if (swipeVotes.some((vote) => !allowedIds.has(vote.optionId)) || new Set(swipeVotes.map((vote) => vote.optionId)).size !== swipeVotes.length)
+      return res.status(400).json({ error: 'Swipe options must belong to this poll and appear only once.' });
     try {
       db.transaction(() => {
+        db.prepare('DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?').run(pollId, req.user.id);
         if (Array.isArray(swipeVotes)) {
           const insertSwipe = db.prepare(
             'INSERT OR REPLACE INTO swipe_votes (poll_id, user_id, option_id, swipe_direction, created_at) VALUES (?, ?, ?, ?, ?)'
