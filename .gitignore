@@ -43,3 +43,7 @@ backups/
 
 # Isolated platform runs, local mail outbox and supervisor lock
 backend/data/
+
+# Private deployment files
+/deploy/
+/DEPLOYMENT_*.md
