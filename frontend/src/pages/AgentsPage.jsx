@@ -27,6 +27,7 @@ export default function AgentsPage() {
 
   useEffect(() => {
     const socket = io(SOCKET_URL, {
+      path: import.meta.env.VITE_SOCKET_PATH || '/socket.io/',
       auth: { token, runId: participantRunId },
       transports: ['websocket', 'polling']
     });

@@ -1,5 +1,6 @@
 import { runId } from '../platform/context.js';
-const API_BASE_URL = `/api/platform/runs/${runId}/engine`;
+const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || '').replace(/\/$/, '');
+const API_BASE_URL = `${API_ORIGIN}/api/platform/runs/${runId}/engine`;
 
 export async function apiRequest(path, options = {}, token) {
   const headers = {

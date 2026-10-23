@@ -163,6 +163,7 @@ export default function AdminDashboard() {
   useEffect(() => { loadData().catch((e) => setError(e.message)); }, [token]);
   useEffect(() => {
     const socket = io(SOCKET_URL, {
+      path: import.meta.env.VITE_SOCKET_PATH || '/socket.io/',
       auth: { token, runId, admin: true },
       transports: ['websocket', 'polling']
     });

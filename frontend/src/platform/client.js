@@ -1,6 +1,10 @@
-export const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "").replace(/\/$/, "");
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+const routePath = basePath && window.location.pathname.startsWith(`${basePath}/`)
+  ? window.location.pathname.slice(basePath.length)
+  : window.location.pathname;
 export const participantRunId =
-  window.location.pathname.match(/^\/participate\/([a-f0-9-]{36})\/?$/)?.[1] ||
+  routePath.match(/^\/participate\/([a-f0-9-]{36})\/?$/)?.[1] ||
   "";
 export const sessionKey = (name) => `${name}:${participantRunId || "legacy"}`;
 export const accountToken = () =>

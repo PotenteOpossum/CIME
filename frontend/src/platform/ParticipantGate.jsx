@@ -57,6 +57,7 @@ export default function ParticipantGate({ children }) {
     const socket = io(
       import.meta.env.VITE_SOCKET_URL || window.location.origin,
       {
+        path: import.meta.env.VITE_SOCKET_PATH || "/socket.io/",
         auth: { token, runId: participantRunId },
         transports: ["websocket", "polling"],
       },
