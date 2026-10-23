@@ -12,7 +12,7 @@ import {
   publicAccount,
   rateLimit,
 } from "./security.js";
-import { sendAccountMail } from "./mail.js";
+import { sendAccountMail, useMailOutbox } from "./mail.js";
 
 export function accountRoutes(store, { dataDir, publicUrl, onLogout }) {
   const router = createRouter();
@@ -72,7 +72,9 @@ export function accountRoutes(store, { dataDir, publicUrl, onLogout }) {
       throw error;
     }
     res.status(201).json({
-      message: "Check your email to verify your account.",
+      message: useMailOutbox()
+        ? "Ask the server administrator for your account verification link."
+        : "Check your email to verify your account.",
       ...(await action(account, "verify")),
     });
   });
@@ -134,7 +136,9 @@ export function accountRoutes(store, { dataDir, publicUrl, onLogout }) {
     );
     const development = account ? await action(account, "reset") : {};
     res.json({
-      message: "If the account exists, a password reset link has been sent.",
+      message: useMailOutbox()
+        ? "If the account exists, ask the server administrator for your password reset link."
+        : "If the account exists, a password reset link has been sent.",
       ...development,
     });
   });
@@ -144,7 +148,9 @@ export function accountRoutes(store, { dataDir, publicUrl, onLogout }) {
       [emailOf(req.body.email)],
     );
     res.json({
-      message: "If verification is needed, a new link has been sent.",
+      message: useMailOutbox()
+        ? "If verification is needed, ask the server administrator for your verification link."
+        : "If verification is needed, a new link has been sent.",
       ...(account ? await action(account, "verify") : {}),
     });
   });

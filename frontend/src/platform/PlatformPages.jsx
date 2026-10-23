@@ -5,6 +5,7 @@ import {
   accountToken,
   saveAccount,
   saveParticipant,
+  platformPath,
 } from "./client.js";
 import { createPortal } from "react-dom";
 import LiveRoomMonitoring from "./LiveRoomMonitoring.jsx";
@@ -65,12 +66,12 @@ export function Shell({ children }) {
   return (
     <div className="platform platform-page">
       <header className="platform-nav">
-        <a href="/">
+        <a href={platformPath("/")}>
           <img src={logo} alt="CIME" />
         </a>
         <nav>
-          <a href="/#/decisions">My decisions</a>
-          <a href="/#/account/login">Admin account</a>
+          <a href={platformPath("/#/decisions")}>My decisions</a>
+          <a href={platformPath("/#/account/login")}>Admin account</a>
         </nav>
       </header>
       <main>{children}</main>
@@ -684,7 +685,7 @@ export function RunPage() {
           <p>{run.description}</p>
         </div>
         <div className="platform-actions">
-          <a className="platform-button secondary" href={`/admin/?run=${id}`}>
+          <a className="platform-button secondary" href={platformPath(`/admin/?run=${id}`)}>
             <Icon name="settings" /> Advanced settings
           </a>
         </div>
@@ -804,7 +805,7 @@ export function RunPage() {
             </button>
             <a
               className="platform-button secondary"
-              href={`/admin/?run=${id}#/quality`}
+              href={platformPath(`/admin/?run=${id}#/quality`)}
             >
               <Icon name="spark" />
               Explore quality
@@ -818,7 +819,7 @@ export function RunPage() {
           <h2>Before & after experiment surveys</h2>
           <p>Set up a pre-survey for the waiting room, a post-survey after the decision, or both. Build questions with the form or JSON editor.</p>
         </div>
-        <a className="platform-button secondary" href={`/admin/?run=${id}#/surveys`}>Configure surveys & view responses</a>
+        <a className="platform-button secondary" href={platformPath(`/admin/?run=${id}#/surveys`)}>Configure surveys & view responses</a>
       </section>
       <section className="platform-card platform-setup">
         <div className="setup-section-title">
@@ -1421,7 +1422,7 @@ export function JoinPage({ invite }) {
         "",
       );
       saveParticipant(result);
-      window.location.assign(`/participate/${result.runId}/#/dashboard`);
+      window.location.assign(platformPath(`/participate/${result.runId}/#/dashboard`));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1445,7 +1446,7 @@ export function JoinPage({ invite }) {
             {existing && (
               <a
                 className="platform-button"
-                href={`/participate/${data.id}/#/dashboard`}
+                href={platformPath(`/participate/${data.id}/#/dashboard`)}
               >
                 Resume participation
               </a>

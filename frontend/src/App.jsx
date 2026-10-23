@@ -13,7 +13,7 @@ import {
   RunPage,
   JoinPage,
 } from "./platform/PlatformPages.jsx";
-import { participantRunId } from "./platform/client.js";
+import { participantRunId, routePath } from "./platform/client.js";
 import ParticipantGate from "./platform/ParticipantGate.jsx";
 
 function ProtectedRoute({ children }) {
@@ -25,7 +25,7 @@ function ProtectedRoute({ children }) {
 export default function App() {
   const { token } = useAuth();
 
-  const invitation = window.location.pathname.match(
+  const invitation = routePath.match(
     /^\/join\/([a-zA-Z0-9_-]+)\/?$/,
   )?.[1];
   if (invitation) return <JoinPage invite={invitation} />;

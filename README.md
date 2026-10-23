@@ -22,7 +22,7 @@ npm run dev:frontend
 npm run dev:admin
 ```
 
-Open **http://localhost:5173**. Register an administrator account. Without SMTP in local development, the verification link is shown in the registration response and saved in `backend/data/mail/outbox.jsonl`. In production links are emailed. The old `setup:admin` command belongs to the legacy server and is not needed for platform accounts.
+Open **http://localhost:5173**. Register an administrator account. Without SMTP in local development, the verification link is shown in the registration response and saved in `backend/data/mail/outbox.jsonl`. In production, use SMTP for automatic emails or explicitly set `CIME_MAIL_MODE=outbox` for manual delivery of links from the private server outbox. Production API responses do not expose those links. The old `setup:admin` command belongs to the legacy server and is not needed for platform accounts.
 
 For a single local server serving compiled interfaces:
 
@@ -66,7 +66,7 @@ Production uses PostgreSQL 16 or newer via `DATABASE_URL`, with shared metadata 
 
 Production requires:
 
-- `NODE_ENV=production`, `DATABASE_URL`, `SMTP_URL`, a valid `MAIL_FROM`, and an HTTPS `PUBLIC_APP_URL`.
+- `NODE_ENV=production`, `DATABASE_URL`, and an HTTPS `PUBLIC_APP_URL`. For account verification and password resets, configure `SMTP_URL` with a valid `MAIL_FROM`, or set `CIME_MAIL_MODE=outbox` and deliver links manually from `CIME_DATA_DIR/mail/outbox.jsonl`.
 - A reverse proxy serving the same origin, forwarding WebSockets, and terminating HTTPS. Set `TRUST_PROXY_HOPS` to the trusted proxy count and `CORS_ORIGIN` to the public origin.
 - Persistent `CIME_DATA_DIR` storage for prompts, settings, logs and import snapshots, even with PostgreSQL.
 - A stable, private `JWT_SECRET`: it signs sessions and encrypts stored Prolific API credentials. Back it up securely with the database and data directory.

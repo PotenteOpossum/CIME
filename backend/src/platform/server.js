@@ -11,6 +11,7 @@ import { env } from "../config/env.js";
 import { openStore } from "./store.js";
 import { WorkerManager } from "./workerManager.js";
 import { accountRoutes } from "./accounts.js";
+import { accountMailConfigured } from "./mail.js";
 import { platformRoutes } from "./routes.js";
 import { engineSecret, fail, now } from "./security.js";
 
@@ -23,11 +24,11 @@ export async function createPlatform({
   if (process.env.NODE_ENV === "production") {
     if (
       !process.env.DATABASE_URL ||
-      !process.env.SMTP_URL ||
+      !accountMailConfigured() ||
       !/^https:\/\//.test(publicUrl)
     )
       throw new Error(
-        "Production requires DATABASE_URL, SMTP_URL and an HTTPS PUBLIC_APP_URL",
+        "Production requires DATABASE_URL, an HTTPS PUBLIC_APP_URL, and SMTP_URL or CIME_MAIL_MODE=outbox",
       );
   }
   const store = providedStore || (await openStore({ dataDir }));

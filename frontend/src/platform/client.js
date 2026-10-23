@@ -1,6 +1,7 @@
 export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "").replace(/\/$/, "");
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
-const routePath = basePath && window.location.pathname.startsWith(`${basePath}/`)
+export const platformPath = (path) => `${basePath}${path}`;
+export const routePath = basePath && window.location.pathname.startsWith(`${basePath}/`)
   ? window.location.pathname.slice(basePath.length)
   : window.location.pathname;
 export const participantRunId =
