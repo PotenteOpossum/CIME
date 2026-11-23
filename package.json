@@ -8,6 +8,7 @@
     "node": ">=22.12 <23"
   },
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "install:all": "npm ci --prefix backend && npm ci --prefix frontend && npm ci --prefix admin-frontend",
     "setup:admin": "npm --prefix backend run setup:admin",
     "dev:backend": "npm --prefix backend run dev",

@@ -14,13 +14,13 @@ node -e "const fs=require('node:fs'),crypto=require('node:crypto'),p='backend/.e
 
 Set your own backend `OPENAI_API_KEY` and available chat models in `backend/.env`. The application can start without a model key, but AI-assisted stages require one. Never put secrets in browser `VITE_` variables.
 
-Start three terminals:
+Start all three services in one terminal:
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
-npm run dev:admin
+npm run dev
 ```
+
+Press **Ctrl+C** to stop all three services, including backend workers. If a service exits, the launcher stops the others too. Code changes reload automatically. The individual `dev:backend`, `dev:frontend`, and `dev:admin` commands remain available when you need to run a service separately.
 
 Open **http://localhost:5173**. Register an administrator account. Without SMTP in local development, the verification link is shown in the registration response and saved in `backend/data/mail/outbox.jsonl`. In production, use SMTP for automatic emails or explicitly set `CIME_MAIL_MODE=outbox` for manual delivery of links from the private server outbox. Production API responses do not expose those links. The old `setup:admin` command belongs to the legacy server and is not needed for platform accounts.
 
