@@ -134,5 +134,23 @@ test(
         .text,
       value,
     );
+    const introduction = await import('../src/services/introductionService.js');
+    introduction.saveIntroduction({ enabled: true, title: 'Study topic', blocks: [{ id: 'context', type: 'paragraph', text: 'Read before answering.' }] });
+    const pending = introduction.participantIntroduction(userId).pending;
+    assert.ok(pending.version);
+    introduction.acknowledgeIntroduction(userId, pending.version);
+    assert.equal(introduction.participantIntroduction(userId).pending, null);
+    assert.equal(introduction.introductionLocked(), true);
+    assert.equal(introduction.introductionExport().acknowledgements.length, 1);
+    const simplified = await import('../src/services/simplifiedCimeService.js');
+    const { roomId } = simplified.startSimplifiedCime({ discussionType: 'simplified', globalQuestion: 'Improve the square?', decisionContext: 'Study scenario', deliberationQuestions: [{ topic: 'Trees', question_text: 'Where should trees go?', predefined_answers: ['Edges', 'Seating'], durationMinutes: 1 }] });
+    const session = simplified.getSimplifiedSession(roomId);
+    simplified.advanceSimplifiedCime(new Date(session.deadline_at).getTime());
+    assert.equal(simplified.getSimplifiedSession(roomId).stage, 'final_vote');
+    const finalPoll = simplified.getSimplifiedSession(roomId).final_poll_id;
+    const finalOption = db.prepare('SELECT id FROM poll_options WHERE poll_id = ? ORDER BY id').get(finalPoll);
+    db.prepare('INSERT INTO poll_votes(poll_id, option_id, user_id, created_at) VALUES (?, ?, ?, ?)').run(finalPoll, finalOption.id, userId, new Date().toISOString());
+    simplified.resolveSimplifiedFinalVote(finalPoll, roomId);
+    assert.equal(simplified.getSimplifiedSession(roomId).stage, 'completed');
   },
 );

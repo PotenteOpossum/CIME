@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { allSurveyQuestions } from '../../shared/surveyLogic.mjs';
 
 process.env.DATABASE_URL = "";
 process.env.JWT_SECRET = "survey-platform-test-secret-at-least-32-characters";
@@ -257,7 +258,7 @@ test(
       { token: owner.token },
     );
     assert.equal(
-      copied.surveys.post.questions[1].condition.questionId,
+      allSurveyQuestions(copied.surveys.post)[1].condition.questionId,
       "choice",
     );
     assert.equal(copied.responses.length, 0);

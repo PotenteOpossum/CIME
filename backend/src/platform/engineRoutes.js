@@ -13,6 +13,8 @@ import { db, ensurePersonalRoomsForAllUsers } from "../config/db.js";
 import { env } from "../config/env.js";
 import { currentUser } from "../middleware/auth.js";
 import { getSurveyDefinitions, getParticipantSurveyStatus, pendingPreSurveyParticipants } from '../services/surveyService.js';
+import { getIntroduction, participantIntroduction, pendingIntroductionParticipants } from '../services/introductionService.js';
+import { getSimplifiedSettings } from '../services/simplifiedSettingsService.js';
 import {
   updateDecisionSettings,
   getDecisionSettings,
@@ -118,6 +120,8 @@ export function engineRoutes() {
     next();
   });
   router.post('/survey-status', (req, res) => res.json(getParticipantSurveyStatus(req.body.userId)));
+  router.post('/introduction-status', (req, res) => res.json(participantIntroduction(req.body.userId)));
+  router.get('/introduction/preflight', (_req, res) => res.json({ pending: pendingIntroductionParticipants() }));
   router.get('/surveys/preflight', (_req, res) => res.json({ pending: pendingPreSurveyParticipants() }));
   router.post("/snapshot", (req, res) => {
     db.prepare(
@@ -144,6 +148,11 @@ export function engineRoutes() {
     res.json({ ok: true });
   });
   router.get("/configuration", (_req, res) => {
+    if (process.env.CIME_DISCUSSION_TYPE === 'simplified') {
+      const settings = getSimplifiedSettings();
+      return res.json({ settings, simplifiedSettings: settings, introduction: getIntroduction(), surveys: getSurveyDefinitions(),
+        prompts: { facilitator: settings.facilitatorPrompt }, templates: {}, models: [{ call_key: 'simplified_facilitator', model_name: settings.model }] });
+    }
     const templatesDir = path.join(process.env.CIME_CONFIG_DIR, "templates");
     const templateNames = fs
       .readdirSync(templatesDir)
@@ -151,6 +160,8 @@ export function engineRoutes() {
     res.json({
       settings: getDecisionSettings(),
       surveys: getSurveyDefinitions(),
+      introduction: getIntroduction(),
+      simplifiedSettings: getSimplifiedSettings(),
       prompts: Object.fromEntries(
         ["agent1", "agent2", "agent3"].map((key) => [key, getAgentPrompt(key)]),
       ),

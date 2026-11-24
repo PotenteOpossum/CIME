@@ -1,4 +1,5 @@
 import { storage, runId } from '../platform/context.js';
+import { platformRequest } from '../platform/platformApi.js';
 import { useEffect, useMemo, useState } from 'react';
 import { apiRequest } from '../api/client.js';
 import { parseSimulationSettingsJson, simulationSettingsToJson } from '../utils/adminJsonConfig.js';
@@ -493,9 +494,7 @@ export default function SimulationTab({
     setHandoffBusy(true);
     setHandoffError('');
     try {
-      const response = await fetch(`/api/platform/runs/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not load the invitation link.');
+      const data = await platformRequest(`/platform/runs/${runId}`, token);
       const result = await apiRequest('/admin/simulation/handoff', { method: 'POST' }, token);
       setHandoff({ ...result, inviteUrl: data.run.invite_url });
       setStatus(result.status);

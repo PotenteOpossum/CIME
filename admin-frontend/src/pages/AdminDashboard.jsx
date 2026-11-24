@@ -1,4 +1,5 @@
 import { runId, storage, transientStorage } from '../platform/context.js';
+import { platformPath } from '../platform/platformApi.js';
 import { useEffect, useMemo, useRef, useState, Fragment, lazy, Suspense } from 'react';
 import { io } from 'socket.io-client';
 import { apiRequest } from '../api/client.js';
@@ -253,9 +254,11 @@ export default function AdminDashboard() {
         'convergence_summary_minutes',
         'time_before_poll_seconds',
         'clustering_min_users_per_room',
-        'clustering_min_rooms'
+        'clustering_min_rooms',
+        'intervention_cooldown_seconds',
+        'intervention_max_per_topic'
       ]);
-      const booleanSettings = new Set(['check_response_validity']);
+      const booleanSettings = new Set(['check_response_validity', 'intervention_enabled']);
       const normalizedValue = numericSettings.has(key) ? Number(value) : (booleanSettings.has(key) ? !!value : value);
       const result = await apiRequest('/admin/decision-process/settings', { method: 'PATCH', body: JSON.stringify({ [key]: normalizedValue }) }, token);
       setDecision((prev) => ({ ...prev, settings: result.settings || prev.settings }));
@@ -528,6 +531,29 @@ const SETTING_LABELS = {
       'A user is considered inactive if they have not sent any chat messages or cast any votes in their active room.',
       'If a user is kicked out, they are removed from the room members list, allowing other processes to resume.'
     ]
+  },
+  intervention_enabled: {
+    label: 'Mid-discussion interventions',
+    help: 'After participants pause, the bot checks whether to step in during the discussion. Simplified CIME uses the same check.',
+    description: 'About 20 seconds after participants stop writing, a cheap model reads the current topic\'s messages and decides whether the facilitator should post: suggest a compromise option, summarize agreement and disagreement, invite quieter participants, refocus the topic, or answer an unanswered question.',
+    notes: [
+      'Most checks end with no message: the model is told to let participants lead.',
+      'The check also runs while a vote is open. It never runs in the last 30 seconds of a topic, or before two new participant messages on the current topic since the bot last spoke.',
+      'Every check is stored with its outcome (blocked by a rule, or the model\'s decision and reason) and included in the run export.',
+      'Silence is still handled by Group proactivity.'
+    ]
+  },
+  intervention_cooldown_seconds: {
+    label: 'Intervention gap',
+    help: 'Minimum seconds since the bot\'s last reply, nudge or intervention (30 to 600). Automatic announcements do not count.',
+    description: 'Prevents the facilitator from posting too often. Its conversational messages count: @mention replies, quiet nudges and earlier interventions. Automatic announcements do not: topic transitions, topic results and voting notices such as "A mandatory poll has been created".',
+    notes: []
+  },
+  intervention_max_per_topic: {
+    label: 'Interventions per topic',
+    help: 'Maximum mid-discussion interventions per topic in each room (0 to 20).',
+    description: 'Caps how often the facilitator steps in on one topic. Quiet nudges and @mention replies do not count toward this limit.',
+    notes: []
   }
 };
 
@@ -1325,7 +1351,7 @@ function DecisionTab({
         </div>
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800/50 pt-6 mt-2">
           <p className="text-xs text-slate-500 max-w-lg leading-relaxed">This context is used by all agents when collecting information, guiding discussion, evaluating vote readiness, and drafting polls.</p>
-          <a href={`/#/runs/${runId}`} className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold">Open decision setup</a>
+          <a href={platformPath(`/#/runs/${runId}`)} className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold">Open decision setup</a>
         </div>
       </div>
     </div>
@@ -1413,13 +1439,19 @@ function DecisionTab({
             convergence_summary_minutes: 10,
             group_proactivity: 5,
             user_poll_rate_limit: 11,
-            user_inactivity_timeout_minutes: 15
+            user_inactivity_timeout_minutes: 15,
+            intervention_cooldown_seconds: 600,
+            intervention_max_per_topic: 20
           };
           const maxVal = maxVals[key] || 5;
-          const defaultVal = key === 'consensus_sensitivity' ? 4 : (key === 'poll_approval_threshold' ? 1 : (key === 'minimum_votes_for_approval' ? 50 : (key === 'minimum_live_voting_duration_minutes' ? 1 : (key === 'consensus_stability_duration_seconds' ? 20 : (key === 'live_voting_duration_minutes' ? 5 : (key === 'suggestion_cooldown_seconds' ? 30 : ((key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds') ? 10 : (key === 'maximum_visible_options' ? 8 : (key === 'poll_timer_minutes' ? 2 : (key === 'convergence_summary_minutes' ? 1 : (key === 'user_poll_rate_limit' ? 11 : (key === 'user_inactivity_timeout_minutes' ? 5 : 3))))))))))));
+          const defaultVal = key === 'consensus_sensitivity' ? 4 : (key === 'poll_approval_threshold' ? 1 : (key === 'minimum_votes_for_approval' ? 50 : (key === 'minimum_live_voting_duration_minutes' ? 1 : (key === 'consensus_stability_duration_seconds' ? 20 : (key === 'live_voting_duration_minutes' ? 5 : (key === 'suggestion_cooldown_seconds' ? 30 : ((key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds') ? 10 : (key === 'maximum_visible_options' ? 8 : (key === 'poll_timer_minutes' ? 2 : (key === 'convergence_summary_minutes' ? 1 : (key === 'user_poll_rate_limit' ? 11 : (key === 'user_inactivity_timeout_minutes' ? 5 : (key === 'intervention_cooldown_seconds' ? 90 : 3)))))))))))));
           const currentVal = localSettings?.[key] !== undefined ? localSettings[key] : defaultVal;
           const currentToggleVal = !!(localSettings?.[key] ?? decision.settings?.[key] ?? false);
-          const displayVal = (key === 'consensus_sensitivity')
+          const displayVal = (key === 'intervention_cooldown_seconds')
+            ? `${currentVal} sec`
+            : (key === 'intervention_max_per_topic')
+            ? `${currentVal} per topic`
+            : (key === 'consensus_sensitivity')
             ? `${currentVal}/10 (${currentVal * 10}%)`
             : (key === 'minimum_votes_for_approval')
             ? `${currentVal}%`
@@ -1432,7 +1464,7 @@ function DecisionTab({
                   : (key === 'user_poll_rate_limit')
             ? (currentVal === 0 ? 'Disabled' : (currentVal === 11 ? 'Endless' : `${currentVal}/10`))
                 : `${currentVal}/${maxVal}`;
-          if (key === 'check_response_validity') {
+          if (key === 'check_response_validity' || key === 'intervention_enabled') {
             return <div key={key} className="rounded-2xl border border-white/5 bg-slate-900/40 p-4 shadow-inner text-sm flex flex-col justify-between">
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -1459,7 +1491,7 @@ function DecisionTab({
               </div>
               <p className="mb-4 text-xs leading-relaxed text-slate-400">{meta.help}</p>
             </div>
-            <input type="range" min={(key === 'user_poll_rate_limit' || key === 'minimum_live_voting_duration_minutes' || (key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds')) ? 0 : (key === 'user_inactivity_timeout_minutes' ? 3 : 1)} max={maxVal} value={currentVal} onChange={(e) => setLocalSettings((prev) => ({ ...prev, [key]: Number(e.target.value) }))} onPointerUp={(e) => saveSetting(key, Number(e.target.value))} onKeyUp={(e) => saveSetting(key, Number(e.target.value))} onBlur={(e) => saveSetting(key, Number(e.target.value))} className="w-full cursor-pointer accent-indigo-500 h-1.5 bg-slate-800 rounded-lg appearance-none" />
+            <input type="range" min={(key === 'user_poll_rate_limit' || key === 'minimum_live_voting_duration_minutes' || key === 'intervention_max_per_topic' || (key === 'time_before_poll_seconds' || key === 'time_before_final_vote_seconds')) ? 0 : (key === 'user_inactivity_timeout_minutes' ? 3 : (key === 'intervention_cooldown_seconds' ? 30 : 1))} max={maxVal} value={currentVal} onChange={(e) => setLocalSettings((prev) => ({ ...prev, [key]: Number(e.target.value) }))} onPointerUp={(e) => saveSetting(key, Number(e.target.value))} onKeyUp={(e) => saveSetting(key, Number(e.target.value))} onBlur={(e) => saveSetting(key, Number(e.target.value))} className="w-full cursor-pointer accent-indigo-500 h-1.5 bg-slate-800 rounded-lg appearance-none" />
           </div>;
         })}
       </div>}

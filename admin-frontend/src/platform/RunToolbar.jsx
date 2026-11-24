@@ -1,22 +1,14 @@
 import { useEffect, useState } from "react";
 import { runId, storage } from "./context.js";
 import { useAdminAuth } from "../contexts/AdminAuthContext.jsx";
+import { platformPath, platformRequest } from './platformApi.js';
 
 export default function RunToolbar() {
   const { token } = useAdminAuth();
   const [run, setRun] = useState(null);
   const [message, setMessage] = useState("");
   async function request(options) {
-    const response = await fetch(`/api/platform/runs/${runId}`, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error);
-    return data;
+    return platformRequest(`/platform/runs/${runId}`, token, options);
   }
   useEffect(() => {
     request()
@@ -41,11 +33,8 @@ export default function RunToolbar() {
         deliberationQuestions: parse("cime_draft_deliberation_questions"),
         generalQuestionAnswers: parse("cime_draft_general_question_answers"),
       };
-      const response = await fetch(
-        `/api/platform/runs/${runId}/engine/admin/decision-process/settings`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (response.ok) config.settings = (await response.json()).settings;
+      const response = await platformRequest(`/platform/runs/${runId}/engine/admin/decision-process/settings`, token);
+      config.settings = response.settings;
       const data = await request({
         method: "PATCH",
         body: JSON.stringify({ config }),
@@ -60,11 +49,11 @@ export default function RunToolbar() {
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-6 py-4 text-slate-800 dark:bg-slate-900 dark:text-slate-100">
       <a
         className="text-emerald-700 dark:text-emerald-400"
-        href={`/#/runs/${runId}`}
+        href={platformPath(`/#/runs/${runId}`)}
       >
         ← Invitations and participants
       </a>
-      <strong>{run?.title || "Decision workspace"}</strong>
+      <strong>{run?.title || "Decision workspace"} · Full CIME</strong>
       <div className="flex items-center gap-3">
         <span role="status" className="text-sm">
           {message}

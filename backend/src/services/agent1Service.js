@@ -4,6 +4,7 @@ import { renderTemplate, getConfiguredModels } from './agentConfigService.js';
 import { getUnresolvedRoomMemoryTopics } from './agent3Service.js';
 import client from './llm.js';
 import { throwIfWorkCancelled } from './workContext.js';
+import { generateSimplifiedReply } from './simplifiedCimeService.js';
 
 function getRecentMessages(roomId, limit = 40) {
   return db
@@ -65,6 +66,7 @@ export async function generateAgent1Reply({ roomId, triggerText, allowDuringPoll
     .prepare('SELECT id, name, system_prompt, is_active, room_type, collection_complete, convergence_finalized FROM rooms WHERE id = ?')
     .get(roomId);
   if (!room || room.is_active !== 1) return null;
+  if (room.room_type === 'plenary') return generateSimplifiedReply({ roomId, triggerText, allowDuringPoll });
 
   // True while a convergence room is still inside its summary review window.
   const inConvergenceReview = room.room_type === 'convergence'
@@ -260,7 +262,7 @@ export async function generateAgent1Reply({ roomId, triggerText, allowDuringPoll
 
   const timestamp = new Date().toISOString();
   const result = db
-    .prepare('INSERT INTO messages (room_id, sender_id, text, timestamp) VALUES (?, NULL, ?, ?)')
+    .prepare('INSERT INTO messages (room_id, sender_id, text, timestamp, is_facilitation) VALUES (?, NULL, ?, ?, 1)')
     .run(roomId, text, timestamp);
 
   return {

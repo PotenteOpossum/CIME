@@ -61,9 +61,15 @@ function ProcessModal({ data, onClose }) {
           <strong>How it works:</strong>
         </p>
         <ul className="list-disc pl-5 mt-2 space-y-2">
+          {data.discussionType === 'simplified' ? <>
+            <li><strong>Shared discussion:</strong> Everyone discusses the proposal together in one chat with an AI facilitator.</li>
+            <li><strong>Timed topics:</strong> The AI introduces each topic and possible outcomes. Topics advance automatically when their time ends; there are no topic ballots.</li>
+            <li><strong>Final vote:</strong> After all topics, you vote on the main question and then complete the post-survey if one is available.</li>
+          </> : <>
           <li><strong>Personal Phase:</strong> You will first discuss the topic in a one-on-one chat with an AI facilitator to gather your initial preferences.</li>
           <li><strong>Group Phase:</strong> Based on your answers, you may be grouped with other participants to debate and find common ground.</li>
           <li><strong>Voting:</strong> At various stages, the AI will propose polls to see if the group has reached a consensus.</li>
+          </>}
         </ul>
         <p className="mt-4">
           Your input is crucial for the final decision. Please engage actively and express your opinions clearly. Scroll to the bottom to continue.
@@ -210,6 +216,7 @@ export default function DashboardPage() {
             if (seenToken !== tokenToStore) {
               setModalData({
                 globalQuestion: decision.global_question,
+                discussionType: decision.discussion_type,
                 generalDescription: decision.general_description,
                 tokenToStore
               });

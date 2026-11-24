@@ -20,7 +20,7 @@ Start all three services in one terminal:
 npm run dev
 ```
 
-Press **Ctrl+C** to stop all three services, including backend workers. If a service exits, the launcher stops the others too. Code changes reload automatically. The individual `dev:backend`, `dev:frontend`, and `dev:admin` commands remain available when you need to run a service separately.
+Press **Ctrl+C** to stop all three services, including backend workers. If a service exits, the launcher stops the others too. The launcher checks ports 4000 (or backend `PORT`), 5173, and 5174 before starting anything. If a port is occupied, it exits with an explanation and leaves the existing process alone. Code changes reload automatically. The individual `dev:backend`, `dev:frontend`, and `dev:admin` commands remain available when you need to run a service separately.
 
 Open **http://localhost:5173**. Register an administrator account. Without SMTP in local development, the verification link is shown in the registration response and saved in `backend/data/mail/outbox.jsonl`. In production, use SMTP for automatic emails or explicitly set `CIME_MAIL_MODE=outbox` for manual delivery of links from the private server outbox. Production API responses do not expose those links. The old `setup:admin` command belongs to the legacy server and is not needed for platform accounts.
 
@@ -32,9 +32,39 @@ npm run build
 
 Set `PUBLIC_APP_URL=http://localhost:4000` in `backend/.env`, then run `npm start` and open that address. The backend health endpoint is `/api/health`; the process workspace is served under `/admin/`.
 
+## Existing COSS server (systemd and Podman)
+
+The deployment at **https://coss-s02.ethz.ch/cime/** already uses two user systemd services: `cime-platform.service` runs the application container and `cime-db.service` runs PostgreSQL 16. Both services are enabled at boot, and user lingering is enabled for `arthur`, so they survive SSH logout. The public reverse proxy forwards to the application container at `127.0.0.1:18701`.
+
+On `coss-s02`, from the updated repository, use:
+
+```bash
+npm run server:start
+npm run server:status
+npm run server:logs
+npm run server:restart
+npm run server:stop
+```
+
+`server:start` starts the existing database and platform services. Running it again leaves active services running; it does not launch a second copy. `server:restart` explicitly restarts only the platform service. `server:stop` stops the platform while leaving the database running. The services already manage crash recovery and reboot startup; no PM2 setup is needed.
+
+These commands wrap `systemctl --user` and `journalctl --user` and must run as `arthur` on the server. They use the installed service/container configuration, without changing environment files or installing a new deployment. They do not require the host Node.js version to match the application container's Node.js version. On your Mac, continue to use `npm run dev`.
+
+The equivalent commands work even before this repository update is copied to the server:
+
+```bash
+systemctl --user start cime-db.service cime-platform.service
+systemctl --user status cime-platform.service cime-db.service --no-pager
+journalctl --user -u cime-platform.service -n 100 -f
+systemctl --user restart cime-platform.service
+systemctl --user stop cime-platform.service
+```
+
+**Restarting does not deploy source changes.** The service runs the built `localhost/cime:production` container image. Pulling Git commits or building interfaces in the checkout does not update that image. An application update requires rebuilding/replacing the production image through the existing deployment procedure, followed by a service restart. The `server:*` commands only manage the installed services; they do not rebuild or migrate data.
+
 ## Running an experiment
 
-1. Create a decision from **My decisions**. Enter its question, background, topics and initial voting options.
+1. From **My decisions**, first choose **Full** or **Simplified**, then create the discussion. Full CIME retains the private interviews, subgroup discussions, implementation ballots, collective review, and final vote. Simplified CIME places everyone in one shared chat, presents topics in the configured order, and runs only the final main-question ballot. The type is fixed for the discussion and copied when repeating a run; existing discussions default to Full.
 2. Choose participant access: **anyone with the link**, **assigned username/password**, or **Prolific**. Configure the participant limit and optional Prolific completion URL.
 3. For assigned credentials, enter one username per line, generate passwords, and download the credential CSV. Keep it private; passwords are hashed and cannot be retrieved later.
 4. Open recruitment and share the invitation URL or download its QR code. Participants join a waiting room. Their private recovery code lets them reconnect without creating a second participant.
@@ -42,9 +72,23 @@ Set `PUBLIC_APP_URL=http://localhost:4000` in `backend/.env`, then run `npm star
 6. Start when the required participants have joined. Registration closes and the roster is frozen. The existing decision phases and voting rules continue.
 7. Monitor and export results in the process workspace. **Repeat as a new run** copies configuration and prompts into fresh storage; earlier participants and results remain in the original run. Simulations use a fresh run without human participants.
 
+For **Simplified**, configure the **Main question**, **Background context**, **CIME opening message**, and **Discussion topics** on the setup page. Give each topic its discussion question, at least two possible outcomes, and its **Discussion time (minutes)**. Fractional minutes are supported. Outcomes are examples for discussion and never become topic ballots. The facilitator introduces each topic and its options, supports discussion, and moves to the next topic when its saved deadline expires, regardless of agreement. Participants can see the current topic, options, and countdown. There are no private interviews, subgroup assignments, implementation votes, or collective-review stage.
+
+After the last topic, the final main-question ballot opens automatically. It uses the same default answer scale as Full CIME, or the final answer options configured by the administrator. It closes when everyone has voted or its deadline expires, including when nobody votes, and then enables the post-survey. Topic progress and deadlines survive engine/server restarts. Interrupted discussions stop advancing. The export includes the type, timed-topic configuration and progress, messages, and final votes; the report does not present discussion options as collective implementation decisions.
+
+**Simplified settings** opens a separate workspace with the facilitator model and instructions, silence-reminder interval (0 disables reminders), and final-vote duration. These settings are saved per run, captured when it starts, locked afterwards, and copied when repeating a run. Its other pages provide the shared discussion monitor, surveys, final results, research export, and AI call logs. Full-only grouping, interview, consensus, topic-ballot, collective-review, and simulation controls are unavailable, including through direct API calls. Start Simplified runs with participants from their setup page. Full discussions retain their existing advanced workspace.
+
+Both types use the same participant pipeline: **topic description → pre-survey → Full or Simplified CIME → post-survey**. Disabled descriptions or surveys are skipped.
+
 Access mode and identity-verification settings lock after the first participant joins. Started runs retain their configuration. Session revocation disconnects a participant; it does not ban their identity from reconnecting. A rotated invitation invalidates the previous URL and QR code.
 
 ## Experiment surveys
+
+Before configuring the questionnaires, use **Topic description** on the experiment setup page to create the page participants read first. Enable it, give it a title, and add headings, text, bullet or numbered lists, and uploaded images. Content blocks can be reordered or removed. Images have editable descriptions for screen readers, captions, and width settings. Use **Participant preview** to review the page, then **Save topic description** to publish the draft to this run.
+
+The participant flow is **topic description → pre-survey → CIME → post-survey**. Participants continue past the description before the pre-survey becomes available. Their progress is saved across reloads, reconnections, and server restarts. The organiser cannot start until every admitted participant has continued and completed any enabled pre-survey. Disabled descriptions or questionnaires are skipped, so existing experiments keep their current flow. Simulations skip the participant introduction.
+
+The description locks after the first participant continues, the first survey response, or experiment start. **Repeat as a new run** copies the page and images into a fresh editable run without copying acknowledgements. The complete run export includes the page and acknowledgement timestamps. Uploaded images are stored with the run rather than loaded from third-party image hosts. The editor resizes images automatically; pages support up to eight images and 6 MB of content. The separate **CIME opening message** is shown during the decision process and does not replace this pre-survey page.
 
 Use **Edit surveys & view responses** on the experiment setup page, or **Surveys** in the process workspace. Enable a survey before the experiment, after it, or both. Each question can collect free text, a single choice, multiple choices, or an integer scale with labelled endpoints. Questions can be required or optional.
 

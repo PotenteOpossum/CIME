@@ -387,7 +387,7 @@ export default function ChatPage() {
   // event (or report generation took longer than expected), recover the final report
   // from the completed convergence room instead of leaving them in a closed room.
   useEffect(() => {
-    if (user?.is_admin === 1 || displayedRoom?.room_type !== 'convergence'
+    if (user?.is_admin === 1 || !['convergence', 'plenary'].includes(displayedRoom?.room_type)
         || (displayedRoom?.is_active !== false && !displayedRoom?.collection_complete)) return undefined;
     let disposed = false;
     const checkForReport = async () => {
@@ -826,6 +826,13 @@ export default function ChatPage() {
   };
 
   const renderRoomStatus = () => {
+    if (displayedRoom?.room_type === 'plenary') return <>
+      <h2 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">{roomStatus?.stage === 'discussing' ? `Topic ${roomStatus.topic_number} of ${roomStatus.topic_count}` : 'Final vote'}</h2>
+      <p className="mb-2 text-sm text-slate-700 dark:text-slate-300">{roomStatus?.ongoing_topic || 'Shared discussion'}</p>
+      {roomStatus?.deadline_at && <p className="mb-3 text-sm font-semibold">Time remaining: {roomCountdown({timer_expires_at: roomStatus.deadline_at})}</p>}
+      {roomStatus?.options?.length > 0 && <><p className="text-xs font-semibold">Possible outcomes to discuss</p><ul className="my-2 list-disc pl-5 text-xs space-y-2">{roomStatus.options.map((option) => <li key={option}>{option}</li>)}</ul></>}
+      <p className="text-xs text-slate-500">Topics advance automatically. There are no topic ballots.</p>
+    </>;
     if (displayedRoom?.room_type !== 'group' && displayedRoom?.room_type !== 'convergence') return null;
     return (
       <>
@@ -1402,7 +1409,7 @@ export default function ChatPage() {
       )}
 
       <div className="md:hidden fixed right-0 top-28 z-30 flex flex-col gap-3 items-end">
-        {displayedRoom && (displayedRoom.room_type === 'group' || displayedRoom.room_type === 'convergence') && (
+        {displayedRoom && ['group', 'convergence', 'plenary'].includes(displayedRoom.room_type) && (
           <button 
             onClick={() => setShowMobileRoomStatus(true)}
             className="bg-indigo-600 text-white p-2.5 rounded-l-2xl shadow-lg border-y border-l border-indigo-500/50 flex items-center justify-center hover:bg-indigo-500 transition-colors"
@@ -1579,7 +1586,7 @@ export default function ChatPage() {
         </section>
 
         <aside className="hidden md:flex h-full min-h-0 flex-col gap-4 shrink">
-          {(displayedRoom?.room_type === 'group' || displayedRoom?.room_type === 'convergence') && (
+          {['group', 'convergence', 'plenary'].includes(displayedRoom?.room_type) && (
             <div className="flex-[0.4] overflow-y-auto rounded-3xl border border-gray-200 bg-white p-6 shadow-sm scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-300 dark:border-gray-800 dark:bg-[#1c1a17] dark:scrollbar-track-[#141413] dark:scrollbar-thumb-gray-700 transition-colors duration-300">
               {renderRoomStatus()}
             </div>

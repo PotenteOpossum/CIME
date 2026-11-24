@@ -7,6 +7,15 @@
 .platform-page {
   min-height: 100vh;
 }
+.discussion-type-picker { border: 0; padding: 0; margin: 22px 0; min-width: 0; }
+.discussion-type-picker legend { font-weight: 600; margin-bottom: 14px; }
+.discussion-type-picker > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.discussion-type-picker label { display: grid; grid-template-columns: 20px 1fr; gap: 8px 12px; padding: 20px; border: 1px solid #dce1d8; border-radius: 14px; cursor: pointer; }
+.discussion-type-picker label.selected { border-color: #315c46; background: #f2f7ef; box-shadow: 0 0 0 1px #315c46; }
+.platform .discussion-type-picker input { width: 18px; height: 18px; margin: 5px 0 0; }
+.discussion-type-picker strong { font-size: 20px; }
+.discussion-type-picker span { grid-column: 2; color: #65716a; font-size: 14px; }
+@media (max-width: 650px) { .discussion-type-picker > div { grid-template-columns: 1fr; } }
 .platform * {
   box-sizing: border-box;
 }

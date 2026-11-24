@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { platformRequest } from "./client.js";
 
-export default function LiveRoomMonitoring({ runId }) {
+export default function LiveRoomMonitoring({ runId, discussionType }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [confirmRoom, setConfirmRoom] = useState(null);
@@ -53,7 +53,7 @@ export default function LiveRoomMonitoring({ runId }) {
       {!data && !error && <p>Loading rooms…</p>}
       {data && (
         <div className="platform-grid">
-          {personal && (
+          {personal && discussionType !== 'simplified' && (
             <article className="platform-card">
               <h3>Personal rooms</h3>
               <p>A summary of all participant interviews.</p>
@@ -82,7 +82,7 @@ export default function LiveRoomMonitoring({ runId }) {
               </span>
               <h3>{room.name}</h3>
               <p>
-                {room.room_type === "convergence"
+                {room.room_type === 'plenary' ? 'Shared discussion' : room.room_type === "convergence"
                   ? "Convergence"
                   : "Discussion group"}{" "}
                 · {room.membersCount} participants
@@ -94,6 +94,7 @@ export default function LiveRoomMonitoring({ runId }) {
                   ? `${Math.floor(room.timeLeftSeconds / 60)}m ${room.timeLeftSeconds % 60}s`
                   : "No active countdown"}
               </p>
+              {room.room_type === 'plenary' ? <><h4>Topics discussed</h4><p>{room.discussedTopics?.join(', ') || 'The first topic is in progress.'}</p><p>Implementation options are discussed without topic ballots.</p></> : <>
               <h4>Approved decisions</h4>
               {room.resolvedTopics.length ? (
                 <ul>
@@ -118,6 +119,7 @@ export default function LiveRoomMonitoring({ runId }) {
               ) : (
                 <p>No polls yet</p>
               )}
+              </>}
               <h4>Topics still to discuss</h4>
               {room.unresolvedTopics.length ? (
                 <ul>
@@ -129,6 +131,7 @@ export default function LiveRoomMonitoring({ runId }) {
                 <p>All topics covered</p>
               )}
               {room.is_active &&
+                room.room_type !== 'plenary' &&
                 !room.collection_complete &&
                 (confirmRoom === room.id ? (
                   <div role="alertdialog" aria-label="Confirm showdown">

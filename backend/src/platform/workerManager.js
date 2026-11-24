@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomToken, engineSecret, fail } from "./security.js";
 import { reserveModelCall } from "./modelBudget.js";
 import { constants as fsConstants } from "node:fs";
+import { getDiscussionType } from '../../../shared/discussionSchema.mjs';
 
 const backendDir = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -83,6 +84,7 @@ export class WorkerManager {
         HOST: "127.0.0.1",
         HTTPS_ENABLED: "false",
         CIME_ENGINE: "true",
+        CIME_DISCUSSION_TYPE: getDiscussionType(JSON.parse(run.config_json || '{}')),
         CIME_RUN_ID: run.id,
         CIME_ENGINE_KEY: key,
         CIME_RUN_ACTIVE: ["active", "starting"].includes(run.status)

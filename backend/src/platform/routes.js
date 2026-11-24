@@ -21,6 +21,8 @@ import {
   validateDraft,
 } from "./runService.js";
 import { verifyProlific } from "./prolific.js";
+import { getDiscussionType, validateDiscussionType } from '../../../shared/discussionSchema.mjs';
+import { simplifiedAdminRequestAllowed } from '../../../shared/simplifiedCapabilities.mjs';
 
 export function platformRoutes(
   store,
@@ -43,6 +45,7 @@ export function platformRoutes(
     res.json({ runs: runs.map(serialize) });
   });
   router.post("/decisions", authenticate, limited, async (req, res) => {
+    const discussionType = validateDiscussionType(req.body.discussion_type ?? 'full');
     const title = String(req.body.title || "").trim();
     if (!title || title.length > 160)
       throw fail(400, "Provide a title of 1–160 characters");
@@ -66,8 +69,8 @@ export function platformRoutes(
         ],
       );
       await query(
-        "INSERT INTO runs(id, decision_id, invite_token, created_at) VALUES (?, ?, ?, ?)",
-        [id, decisionId, randomToken(), now()],
+        "INSERT INTO runs(id, decision_id, invite_token, created_at, config_json) VALUES (?, ?, ?, ?, ?)",
+        [id, decisionId, randomToken(), now(), JSON.stringify({ discussionType })],
       );
     });
     await service.audit(req.account.id, id, "decision_created");
@@ -147,6 +150,8 @@ export function platformRoutes(
       )
         throw fail(400, "Invalid participant limit");
       const config = { ...parseConfig(run), ...(req.body.config || {}) };
+      if (getDiscussionType(config) === 'simplified' && req.body.config?.settings !== undefined && JSON.stringify(req.body.config.settings) !== JSON.stringify(parseConfig(run).settings)) throw fail(400, 'Use the Simplified settings page to configure this discussion.');
+      if (getDiscussionType(config) !== getDiscussionType(parseConfig(run))) throw fail(409, 'The discussion type is fixed when the discussion is created. Create another discussion to choose a different type.');
       if (JSON.stringify(config).length > 100000)
         throw fail(400, "Configuration is too large");
       validateDraft(config);
@@ -203,7 +208,7 @@ export function platformRoutes(
           run.id,
         ],
       );
-      if (config.settings)
+      if (config.settings && getDiscussionType(config) !== 'simplified')
         await manager.call(run, "/settings", {
           method: "POST",
           body: config.settings,
@@ -345,6 +350,14 @@ export function platformRoutes(
         const repeated = await service.owned(id, req.account.id);
         await manager.call(repeated, '/admin/surveys', { method: 'PUT', owner: true, body: reusable.surveys });
       }
+      if (reusable.introduction) {
+        const repeated = await service.owned(id, req.account.id);
+        await manager.call(repeated, '/admin/introduction', { method: 'PUT', owner: true, body: reusable.introduction });
+      }
+      if (getDiscussionType(parseConfig(old)) === 'simplified' && reusable.simplifiedSettings) {
+        const repeated = await service.owned(id, req.account.id);
+        await manager.call(repeated, '/admin/simplified/settings', { method: 'PUT', owner: true, body: reusable.simplifiedSettings });
+      }
       await service.audit(req.account.id, id, "run_repeated");
       res
         .status(201)
@@ -480,6 +493,9 @@ export function platformRoutes(
   router.get("/participants/:id", async (req, res) => {
     const { run, session } = await participant(req);
     const state = await manager.call(run, "/state");
+    const introduction = ['interrupted', 'failed'].includes(run.status)
+      ? { pending: null }
+      : await manager.call(run, '/introduction-status', { method: 'POST', body: { userId: session.user.id } });
     const surveys = ['interrupted', 'failed'].includes(run.status)
       ? { pending: null }
       : await manager.call(run, '/survey-status', { method: 'POST', body: { userId: session.user.id } });
@@ -488,6 +504,8 @@ export function platformRoutes(
       phase: state.phase,
       status: run.status,
       surveys,
+      introduction,
+      discussion_type: getDiscussionType(parseConfig(run)),
       completion_url:
         state.phase === "completed" && !surveys.pending
           ? parseConfig(run).prolific_completion_url || null
@@ -508,7 +526,7 @@ export function platformRoutes(
   router.use("/runs/:id/engine", async (req, res, next) => {
     try {
       const route = req.url.split("?")[0];
-      if (!/^\/(admin|rooms|decision|surveys)(\/|$)/.test(route))
+      if (!/^\/(admin|rooms|decision|surveys|introduction)(\/|$)/.test(route))
         throw fail(404, "Endpoint not found");
       let run, token;
       if (
@@ -522,6 +540,23 @@ export function platformRoutes(
           ),
         );
         run = await getOwned(req);
+        if (getDiscussionType(parseConfig(run)) === 'simplified' && !simplifiedAdminRequestAllowed(req.method, route))
+          throw fail(409, 'This control belongs to Full CIME. Use the Simplified workspace for facilitator settings, timed topics, and its final ballot.');
+        if (getDiscussionType(parseConfig(run)) !== 'simplified' && /^\/admin\/simplified(?:\/|$)/.test(route)) throw fail(404, 'Simplified settings do not apply to Full CIME.');
+        if (/^\/admin\/simplified\/settings\/?$/.test(route) && req.method === 'PUT') {
+          return res.json(await service.exclusive(run.id, async () => {
+            const latest = await getOwned(req);
+            if (!fresh(latest) || latest.archived) throw fail(409, 'Simplified settings are locked after the discussion starts. Repeat the run to edit them.');
+            return manager.call(latest, '/admin/simplified/settings', { method: 'PUT', owner: true, body: req.body });
+          }));
+        }
+        if (/^\/admin\/introduction\/?$/.test(route) && req.method === 'PUT') {
+          return res.json(await service.exclusive(run.id, async () => {
+            const latest = await getOwned(req);
+            if (!fresh(latest) || latest.archived) throw fail(409, 'The topic description is locked after the experiment starts. Repeat the run to edit it.');
+            return manager.call(latest, '/admin/introduction', { method: 'PUT', owner: true, body: req.body });
+          }));
+        }
         if (route === '/admin/surveys' && req.method === 'PUT') {
           return res.json(await service.exclusive(run.id, async () => {
             const latest = await getOwned(req);
@@ -563,10 +598,16 @@ export function platformRoutes(
         run = entry.run;
         token = entry.token;
         const surveyRequest = /^\/surveys(?:\/(pre|post)\/responses)?\/?$/.test(route);
+        const introductionRequest = /^\/introduction(?:\/continue)?\/?$/.test(route);
+        if (introductionRequest && !fresh(run)) throw fail(409, 'The topic description is unavailable for this experiment right now.');
+        if (!introductionRequest) {
+          const { pending } = await manager.call(run, '/introduction-status', { method: 'POST', body: { userId: entry.session.user.id } });
+          if (pending) throw fail(409, 'Read the topic description and continue before opening the survey or discussion.');
+        }
         if (surveyRequest && ['starting', 'interrupted', 'failed'].includes(run.status)) throw fail(409, 'Surveys are not available for this experiment right now.');
-        if (!surveyRequest && run.status !== "active" && !["GET", "HEAD"].includes(req.method))
+        if (!surveyRequest && !introductionRequest && run.status !== "active" && !["GET", "HEAD"].includes(req.method))
           throw fail(409, "This run is closed. You can review its history.");
-        if (!surveyRequest && ["draft", "recruiting", "starting", "failed"].includes(run.status))
+        if (!surveyRequest && !introductionRequest && ["draft", "recruiting", "starting", "failed"].includes(run.status))
           throw fail(409, "Please wait for the administrator to start");
       }
       const worker = await manager.ensure(run);
@@ -606,6 +647,7 @@ export function platformRoutes(
         const draft = parseConfig(run);
         return res.json({
           ...status,
+          discussion_type: getDiscussionType(draft),
           global_question: draft.globalQuestion || status.global_question,
           decision_context: draft.decisionContext || status.decision_context,
           general_description:

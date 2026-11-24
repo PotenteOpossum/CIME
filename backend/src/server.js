@@ -10,11 +10,14 @@ import roomRoutes from './routes/rooms.js';
 import adminRoutes from './routes/admin.js';
 import decisionRoutes from './routes/decision.js';
 import { surveyAdminRoutes, surveyParticipantRoutes } from './routes/surveys.js';
+import { introductionAdminRoutes, introductionParticipantRoutes } from './routes/introduction.js';
 import { attachSocketHandlers } from './socket/socketManager.js';
 import { initAgent3 } from './services/agent3Service.js';
 import fs from 'fs';
 import { recoverSimulation } from './services/simulationService.js';
 import { engineRoutes, initEnginePlatform } from './platform/engineRoutes.js';
+import { initSimplifiedCime } from './services/simplifiedCimeService.js';
+import { simplifiedAdminRoutes } from './routes/simplified.js';
 
 initDb();
 if (process.env.CIME_ENGINE === 'true') initEnginePlatform();
@@ -32,6 +35,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.use('/api/admin/introduction', express.json({ limit: '8mb' }));
 app.use(express.json({ limit: '256kb' }));
 
 app.get('/api/health', (_req, res) => {
@@ -79,6 +83,9 @@ app.use('/api/decision', decisionRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/surveys', surveyAdminRoutes);
 app.use('/api/surveys', surveyParticipantRoutes);
+app.use('/api/admin/introduction', introductionAdminRoutes);
+app.use('/api/introduction', introductionParticipantRoutes);
+app.use('/api/admin/simplified', simplifiedAdminRoutes);
 
 // Express 4 does not automatically forward rejected async handlers.
 app.use((error, req, res, next) => {
@@ -94,6 +101,7 @@ app.use((error, req, res, next) => {
 });
 
 attachSocketHandlers(io);
+initSimplifiedCime(io);
 if (process.env.CIME_ENGINE !== 'true' || process.env.CIME_RUN_ACTIVE === 'true') initAgent3(io);
 if (process.env.CIME_RUN_ACTIVE === 'true') recoverSimulation(io);
 

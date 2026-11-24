@@ -4,6 +4,8 @@ import { verifySocketToken } from '../middleware/auth.js';
 import { maybeGenerateBotReply, roomShouldAutoBot } from '../services/openaiService.js';
 import { consumePersonalRoomReplyAction, processAgent3AfterMessage } from '../services/agent3Service.js';
 import { getDecisionSettings, renderTemplate } from '../services/agentConfigService.js';
+import { advanceSimplifiedCime } from '../services/simplifiedCimeService.js';
+import { scheduleInterventionCheck } from '../services/interventionService.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -94,6 +96,14 @@ export function attachSocketHandlers(io) {
       // Polls are a parallel interaction, not a chat lock. Participants must be able to
       // ask clarifying questions, explain their vote, and respond to the facilitator while
       // a mandatory poll is open; the vote endpoint independently validates poll expiry.
+      const lifecycle = db.prepare('SELECT room_type, is_active FROM rooms WHERE id = ?').get(parsedRoomId);
+      if (lifecycle?.room_type === 'plenary') {
+        advanceSimplifiedCime();
+        if (db.prepare('SELECT is_active FROM rooms WHERE id = ?').get(parsedRoomId)?.is_active !== 1) {
+          socket.emit('error_message', { error: 'This discussion has ended.' });
+          return;
+        }
+      }
       const timestamp = new Date().toISOString();
       const insert = db
         .prepare(
@@ -112,8 +122,19 @@ export function attachSocketHandlers(io) {
       };
 
       io.to(`room:${parsedRoomId}`).emit('receive_message', payload);
+      if (db.prepare('SELECT room_type FROM rooms WHERE id = ?').get(parsedRoomId)?.room_type === 'plenary') {
+        advanceSimplifiedCime();
+        if (!roomIsActive(parsedRoomId)) return;
+        scheduleInterventionCheck(parsedRoomId, io);
+        const mention = trimmed.toLowerCase().includes(env.botTriggerHandle.toLowerCase());
+        if (!mention && !roomShouldAutoBot(parsedRoomId)) return;
+        const reply = await maybeGenerateBotReply({ roomId: parsedRoomId, triggerText: mention ? 'A participant addressed the facilitator. Answer briefly about the current topic or the process.' : 'Respond briefly to the participant on the current topic.', allowDuringPoll: mention });
+        if (reply) io.to(`room:${parsedRoomId}`).emit('receive_message', reply);
+        return;
+      }
       const qualityResult = await processAgent3AfterMessage({ roomId: parsedRoomId, userId: user.id });
       if (qualityResult.closedRoom || !roomIsActive(parsedRoomId)) return;
+      scheduleInterventionCheck(parsedRoomId, io);
       // Agent 3 may have already explained why a vote request cannot proceed
       // (for example, not enough distinct participants or a pending ranking
       // transition). Do not append the older generic readiness message.

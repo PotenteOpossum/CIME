@@ -448,6 +448,30 @@ export function initDb() {
   }
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS simplified_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1), settings_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS simplified_cime (
+      id INTEGER PRIMARY KEY CHECK (id = 1), room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      decision_run_id TEXT NOT NULL, config_json TEXT NOT NULL, topic_index INTEGER NOT NULL DEFAULT 0,
+      stage TEXT NOT NULL CHECK (stage IN ('discussing', 'final_vote', 'completed')),
+      topic_started_at TEXT NOT NULL, deadline_at TEXT, final_poll_id INTEGER REFERENCES polls(id) ON DELETE SET NULL
+    );
+    -- One row per mid-discussion intervention check: blocked by a rule, or decided by the model.
+    CREATE TABLE IF NOT EXISTS intervention_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      discussion_type TEXT NOT NULL, topic TEXT, decided_at TEXT NOT NULL,
+      intervene INTEGER NOT NULL, move TEXT, reason TEXT, outcome TEXT NOT NULL,
+      signals_json TEXT NOT NULL DEFAULT '{}', message_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS topic_introduction (
+      id INTEGER PRIMARY KEY CHECK (id = 1), definition_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS introduction_reads (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      version TEXT NOT NULL, acknowledged_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS survey_definitions (
       stage TEXT PRIMARY KEY CHECK (stage IN ('pre', 'post')),
       definition_json TEXT NOT NULL
@@ -476,6 +500,11 @@ export function initDb() {
   if (!hasColumn('rooms', 'collection_complete')) db.exec('ALTER TABLE rooms ADD COLUMN collection_complete INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'collection_banner')) db.exec("ALTER TABLE rooms ADD COLUMN collection_banner TEXT NOT NULL DEFAULT ''");
   if (!hasColumn('rooms', 'topic_memory_json')) db.exec("ALTER TABLE rooms ADD COLUMN topic_memory_json TEXT NOT NULL DEFAULT '[]'");
+  // Simplified CIME has no topic polls, so each topic's start time is recorded here.
+  if (!hasColumn('rooms', 'topic_timeline_json')) db.exec("ALTER TABLE rooms ADD COLUMN topic_timeline_json TEXT NOT NULL DEFAULT '[]'");
+  // 1 for the facilitator's conversational replies (answers, nudges, interventions), 0 for
+  // automatic announcements such as topic transitions, results and voting notices.
+  if (!hasColumn('messages', 'is_facilitation')) db.exec('ALTER TABLE messages ADD COLUMN is_facilitation INTEGER NOT NULL DEFAULT 0');
   if (!hasColumn('rooms', 'recap_report')) db.exec('ALTER TABLE rooms ADD COLUMN recap_report TEXT');
   if (!hasColumn('rooms', 'final_vote_not_before')) db.exec('ALTER TABLE rooms ADD COLUMN final_vote_not_before TEXT');
   if (!hasColumn('rooms', 'personal_poll_mode')) db.exec('ALTER TABLE rooms ADD COLUMN personal_poll_mode INTEGER NOT NULL DEFAULT 0');

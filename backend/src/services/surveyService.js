@@ -1,4 +1,5 @@
 import { db } from "../config/db.js";
+import { participantIntroduction } from './introductionService.js';
 import {
   hasSurveyAnswer as present,
   matchesSurveyCondition as matches,
@@ -113,6 +114,7 @@ function runId() {
 }
 
 export function getParticipantSurveyStatus(userId) {
+  if (participantIntroduction(userId).pending) return { pending: null };
   const state = db
     .prepare(
       "SELECT current_phase, decision_run_mode FROM system_state WHERE id = 1",

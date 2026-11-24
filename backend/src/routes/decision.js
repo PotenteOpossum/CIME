@@ -16,11 +16,13 @@ function publicDecisionStatus() {
   const settings = getDecisionSettings();
   return {
     global_question: status.global_question,
+    discussion_type: status.discussion_type,
+    simplified: status.simplified,
     general_description: status.general_description,
     current_phase: status.current_phase,
     process_started_at: status.process_started_at,
     phase1: status.phase1,
-    clustering: {
+    clustering: status.discussion_type === 'simplified' ? null : {
       reason: clusteringPublicReason(settings.clustering_strategy)
     },
     agents: (status.agents || []).map((agent) => ({
@@ -70,6 +72,15 @@ router.post('/agent-chat', async (req, res) => {
   if (!message) return res.status(400).json({ error: 'message is required' });
 
   const status = publicDecisionStatus();
+  if (status.discussion_type === 'simplified') {
+    const progress = status.simplified;
+    const reply = progress?.stage === 'discussing'
+      ? `Everyone is in one shared discussion. You are on topic ${progress.topicNumber} of ${progress.topicCount}: ${progress.topic}. The next topic begins automatically when the current countdown ends. There are no votes on individual topics; the main-question ballot opens after the last topic.`
+      : progress?.stage === 'final_vote' ? 'The final main-question ballot is open. Choose your answer in the poll; it closes when everyone has voted or its time ends.'
+      : progress?.stage === 'completed' ? 'The shared discussion and final ballot are complete. Please continue to the post-survey if one is available.'
+      : 'The organiser has not started the shared discussion yet.';
+    return res.json({ reply });
+  }
   logAgentEvent('agent2', 'User asked for process status', `${req.user.username}: ${message}`);
 
   const fallback =

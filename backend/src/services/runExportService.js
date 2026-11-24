@@ -2,6 +2,9 @@ import { db } from '../config/db.js';
 import { getDecisionSettings } from './agentConfigService.js';
 import { readLog } from './decisionLogService.js';
 import { surveyExport } from './surveyService.js';
+import { introductionExport } from './introductionService.js';
+import { getSimplifiedSession } from './simplifiedCimeService.js';
+import { getSimplifiedSettings } from './simplifiedSettingsService.js';
 
 const EXPORT_VERSION = 2;
 
@@ -69,6 +72,7 @@ function collectIds(rows, key) {
  */
 export function buildComputedRunExport() {
   const surveys = surveyExport();
+  const introduction = introductionExport();
   const state = db.prepare('SELECT * FROM system_state WHERE id = 1').get() || {};
   const runId = state.decision_run_id || null;
   const runStartedAt = state.decision_run_started_at || null;
@@ -96,6 +100,7 @@ export function buildComputedRunExport() {
   const roomStatus = rowsForRooms('room_status', roomIds, 'last_updated_at', runStartedAt);
   const convergenceAgreements = rowsForRooms('convergence_agreements', roomIds, 'created_at', runStartedAt);
   const convergenceReviewActions = rowsForRooms('convergence_review_actions', roomIds, 'created_at', runStartedAt);
+  const interventionDecisions = rowsForRooms('intervention_decisions', roomIds, 'decided_at', runStartedAt);
   const customOptionAnalyses = rowsFromIds('custom_option_analyses', 'poll_id', pollIds);
   const proactivenessAnalyses = rowsFromIds('message_proactiveness_analyses', 'message_id', collectIds(messages, 'id'));
   const deliberativeQualityAnalyses = rowsFromIds('message_deliberative_quality_analyses', 'message_id', collectIds(messages, 'id'));
@@ -142,6 +147,7 @@ export function buildComputedRunExport() {
   };
 
   const records = {
+    introductionAcknowledgements: introduction.acknowledgements,
     surveyResponses: surveys.responses,
     users,
     ...(process.env.CIME_ENGINE === 'true' ? { participantIdentities: db.prepare('SELECT user_id, joined_at, prolific_pid, prolific_study_id, prolific_session_id FROM run_participants ORDER BY user_id').all() } : {}),
@@ -163,6 +169,7 @@ export function buildComputedRunExport() {
     roomStatus,
     convergenceAgreements,
     convergenceReviewActions,
+    interventionDecisions,
     agentEvents,
     agentInstructions,
     userTopicPreferences,
@@ -171,6 +178,9 @@ export function buildComputedRunExport() {
   };
 
   const recordCounts = Object.fromEntries(Object.entries(records).map(([key, value]) => [key, value.length]));
+  const simplifiedSession = getSimplifiedSession();
+  const discussionType = process.env.CIME_DISCUSSION_TYPE || (simplifiedSession ? 'simplified' : 'full');
+  const simplifiedSettings = discussionType === 'simplified' ? simplifiedSession?.config.simplifiedSettings || getSimplifiedSettings() : null;
   return {
     manifest: {
       exportVersion: EXPORT_VERSION,
@@ -187,6 +197,10 @@ export function buildComputedRunExport() {
       qualityComputedOnly: true
     },
     configuration: {
+      discussionType,
+      ...(simplifiedSession ? { simplifiedDiscussion: simplifiedSession } : {}),
+      ...(simplifiedSettings ? { simplifiedSettings } : {}),
+      introduction: introduction.definition,
       surveys: surveys.definitions,
       globalQuestion: state.global_question || '',
       decisionContext: state.decision_context || '',
@@ -194,7 +208,7 @@ export function buildComputedRunExport() {
       discussionRound: state.discussion_round ?? 0,
       roomTimerMinutes: state.room_timer_minutes ?? null,
       activeTopicIndex: state.active_topic_index ?? 0,
-      settings: getDecisionSettings(),
+      settings: simplifiedSettings || getDecisionSettings(),
       deliberationQuestions: gatheringQuestions.map((question) => ({
         ...question,
         predefined_answers: parseJson(question.predefined_answers_json, [])

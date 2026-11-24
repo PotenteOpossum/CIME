@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { checkPort } from './ports.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -18,6 +20,28 @@ for (const name of ['backend', 'frontend', 'admin-frontend']) {
 }
 if (!existsSync(path.join(root, 'backend/.env'))) {
   console.error('Missing backend/.env. Follow Local setup in README.md first.');
+  process.exit(1);
+}
+
+const requireBackend = createRequire(path.join(root, 'backend/package.json'));
+const dotenv = requireBackend('dotenv');
+const config = {
+  ...dotenv.parse(readFileSync(path.join(root, 'backend/.env'))),
+  ...process.env,
+};
+if (config.NODE_ENV === 'production') {
+  console.error('For a persistent production server, use npm run server:start.');
+  process.exit(1);
+}
+try {
+  // Probe every port before starting any service; never kill an existing process.
+  for (const [port, host] of [
+    [Number(config.PORT || 4000), config.HOST || '127.0.0.1'],
+    [5173, '127.0.0.1'],
+    [5174, '127.0.0.1'],
+  ]) await checkPort(port, host);
+} catch (error) {
+  console.error(error.message);
   process.exit(1);
 }
 

@@ -5,6 +5,7 @@ import { io } from 'socket.io-client';
 import { apiRequest } from '../api/client.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import cimeLogo from '../img/CIME_LOGO.png';
+import { useParticipantRun } from '../platform/ParticipantGate.jsx';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
@@ -15,6 +16,8 @@ export default function AgentsPage() {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const participantRun = useParticipantRun();
+  const simplified = participantRun?.discussion_type === 'simplified' || decision.discussion_type === 'simplified';
 
   const loadDecision = async () => {
     const data = await apiRequest('/decision', {}, token);
@@ -62,7 +65,7 @@ export default function AgentsPage() {
           <div className="flex items-center gap-3">
             <img src={cimeLogo} alt="CIME Logo" className="h-12 w-auto object-contain" />
             <div>
-              <h1 className="text-2xl font-bold">Agent Monitor</h1>
+              <h1 className="text-2xl font-bold">{simplified ? 'Discussion status' : 'Agent Monitor'}</h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">Read-only view for {user?.username}. You can ask what is happening, but only admins can change the process.</p>
             </div>
           </div>
@@ -75,7 +78,7 @@ export default function AgentsPage() {
           <h2 className="mb-3 text-lg font-semibold">Decision Process</h2>
           <div className="grid gap-3 md:grid-cols-3">
             <StatusCard label="Phase" value={decision.current_phase || 'idle'} />
-            <StatusCard label="Phase 1 Complete" value={`${decision.phase1?.completed || 0}/${decision.phase1?.total || 0}`} />
+            {simplified ? <StatusCard label="Topic" value={decision.simplified?.stage === 'discussing' ? `${decision.simplified.topicNumber} of ${decision.simplified.topicCount}: ${decision.simplified.topic}` : decision.simplified?.stage?.replace('_',' ') || 'Waiting'} /> : <StatusCard label="Phase 1 Complete" value={`${decision.phase1?.completed || 0}/${decision.phase1?.total || 0}`} />}
             <StatusCard label="Question" value={decision.global_question || 'Not started'} />
           </div>
           {decision.clustering?.reason ? (
@@ -90,7 +93,7 @@ export default function AgentsPage() {
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 p-4 shadow-sm transition-colors">
-          <h2 className="mb-3 text-lg font-semibold">Ask The Agents</h2>
+          <h2 className="mb-3 text-lg font-semibold">{simplified ? 'Ask about the discussion' : 'Ask The Agents'}</h2>
           <div className="mb-3 h-80 overflow-y-auto rounded-lg bg-slate-50 dark:bg-slate-950 p-3 text-sm border border-slate-200 dark:border-slate-800 transition-colors">
             {chat.map((message, index) => (
               <div key={`${message.role}-${index}`} className="mb-3">
@@ -99,7 +102,7 @@ export default function AgentsPage() {
               </div>
             ))}
             {!chat.length ? (
-              <p className="text-slate-500 dark:text-slate-400">Try: “What phase are we in?”, “What is Agent 3 checking?”, or “Why is the group waiting?”</p>
+              <p className="text-slate-500 dark:text-slate-400">{simplified ? 'Ask about the current topic, its countdown, or when the final ballot opens.' : 'Try: “What phase are we in?”, “What is Agent 3 checking?”, or “Why is the group waiting?”'}</p>
             ) : null}
           </div>
           <div className="flex gap-2">

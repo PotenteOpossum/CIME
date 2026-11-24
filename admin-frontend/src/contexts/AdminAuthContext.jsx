@@ -20,7 +20,8 @@ export function AdminAuthProvider({ children }) {
   };
 
   const logout = () => {
-    fetch('/api/accounts/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    const apiOrigin = (import.meta.env.VITE_API_ORIGIN || '').replace(/\/$/, '');
+    fetch(`${apiOrigin}/api/accounts/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(USER_KEY);
     setToken('');

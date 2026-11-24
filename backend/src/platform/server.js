@@ -37,6 +37,7 @@ export async function createPlatform({
   app.disable("x-powered-by");
   app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 0));
   app.use(cors({ origin: env.corsOrigins, credentials: false }));
+  app.use('/api/platform/runs/:id/engine/admin/introduction', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: "256kb" }));
   app.use((_req, res, next) => {
     res.set("Referrer-Policy", "no-referrer");

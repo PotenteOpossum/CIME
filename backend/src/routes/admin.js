@@ -81,6 +81,8 @@ import {
 } from "../services/simulationPersonaService.js";
 
 import { createSimulationRecoveryCodes } from "../platform/engineRoutes.js";
+import { startSimplifiedCime } from '../services/simplifiedCimeService.js';
+import { getDiscussionType, defaultFinalAnswers } from '../../../shared/discussionSchema.mjs';
 
 const router = createRouter();
 router.use(authMiddleware, adminMiddleware);
@@ -152,14 +154,7 @@ function normalizePollOptions(options) {
 }
 
 function defaultGeneralAnswers() {
-  return [
-    "No",
-    "Probably no, but I can try",
-    "I am hesitant",
-    "Maybe",
-    "Yes, I am open",
-    "Yes, very open",
-  ];
+  return defaultFinalAnswers();
 }
 
 function normalizeQuestionAnswers(rawAnswers) {
@@ -309,6 +304,11 @@ router.get("/decision-process", (_req, res) => {
 });
 
 router.post("/decision-process/start", async (req, res) => {
+  if (getDiscussionType(req.body) === 'simplified') {
+    await stopSimulation(false);
+    cancelDecisionWork();
+    return res.json(startSimplifiedCime(req.body, req.app.get('io')));
+  }
   const {
     globalQuestion,
     decisionContext = "",
@@ -362,17 +362,17 @@ router.post("/decision-process/start", async (req, res) => {
     db.prepare("DELETE FROM poll_votes").run();
     db.prepare("DELETE FROM room_decisions").run();
     db.prepare("UPDATE rooms SET is_active = 0").run();
-    // Remove stale group/convergence rooms from any previous run so they don't linger on user
+    // Remove stale group/convergence/plenary rooms from any previous run so they don't linger on user
     // dashboards or cause "(2)" name collisions when new rooms are created. Personal rooms are
     // recreated fresh below.
     db.prepare(
-      "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+      "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
     ).run();
     db.prepare(
-      "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+      "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
     ).run();
     db.prepare(
-      "DELETE FROM rooms WHERE room_type IN ('group','convergence')",
+      "DELETE FROM rooms WHERE room_type IN ('group','convergence','plenary')",
     ).run();
     const settings = getDecisionSettings();
     db.prepare(
@@ -483,13 +483,13 @@ router.post("/decision-process/fast-simulation", async (req, res) => {
     // Clear stale group/convergence rooms from a previous run so repeated fast-simulations don't
     // accumulate rooms or create "(2)"-suffixed duplicate names.
     db.prepare(
-      "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+      "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
     ).run();
     db.prepare(
-      "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+      "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
     ).run();
     db.prepare(
-      "DELETE FROM rooms WHERE room_type IN ('group','convergence')",
+      "DELETE FROM rooms WHERE room_type IN ('group','convergence','plenary')",
     ).run();
 
     db.prepare(
@@ -954,17 +954,17 @@ router.post("/simulation/start", async (req, res) => {
       db.prepare("DELETE FROM poll_votes").run();
       db.prepare("DELETE FROM room_decisions").run();
       db.prepare("UPDATE rooms SET is_active = 0").run();
-      // Remove stale group/convergence rooms from any previous run (same cleanup as
+      // Remove stale group/convergence/plenary rooms from any previous run (same cleanup as
       // /decision-process/start); leftovers with an old decision_round would otherwise be
       // counted by the round reconciler and block completion.
       db.prepare(
-        "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+        "DELETE FROM messages WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
       ).run();
       db.prepare(
-        "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence'))",
+        "DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE room_type IN ('group','convergence','plenary'))",
       ).run();
       db.prepare(
-        "DELETE FROM rooms WHERE room_type IN ('group','convergence')",
+        "DELETE FROM rooms WHERE room_type IN ('group','convergence','plenary')",
       ).run();
 
       db.prepare(
@@ -3336,7 +3336,7 @@ router.get(
       // ── Fetch rooms for room_type joining (EXCLUDING personal rooms) ──
       const rooms = db
         .prepare(
-          "SELECT id, name, room_type, is_active FROM rooms WHERE room_type <> 'personal'",
+          "SELECT id, name, room_type, is_active, topic_timeline_json FROM rooms WHERE room_type <> 'personal'",
         )
         .all();
       const roomById = {};
@@ -3516,6 +3516,19 @@ router.get(
       }
 
       function getTopicForTimestamp(roomId, timestamp) {
+        // Simplified CIME has no topic polls: use the recorded topic start times.
+        const timeline = JSON.parse(
+          roomById[roomId]?.topic_timeline_json || "[]",
+        );
+        if (timeline.length > 0) {
+          const time = new Date(timestamp).getTime();
+          let entry = timeline[0];
+          for (const item of timeline) {
+            if (new Date(item.started_at).getTime() <= time) entry = item;
+            else break;
+          }
+          return entry.topic;
+        }
         const roomPolls = pollsByRoom[roomId] || [];
         if (roomPolls.length === 0) return "general-question";
         const time = new Date(timestamp).getTime();
@@ -3703,6 +3716,25 @@ router.get(
             return `[${msg.id}] ${msg.timestamp} ${sender}: ${msg.text}`;
           })
           .join("\n");
+
+        // Simplified CIME discusses each topic without a ballot, so the
+        // topic's question and options stand in for the current poll.
+        const simplifiedTopic = roomById[roomId]?.room_type === "plenary"
+          ? getTopicForTimestamp(roomId, messageTimestamp)
+          : null;
+        if (simplifiedTopic && simplifiedTopic !== "general-question") {
+          const details = db
+            .prepare(
+              "SELECT question_text, predefined_answers_json FROM gathering_questions WHERE topic = ? AND is_general_question = 0 LIMIT 1",
+            )
+            .get(simplifiedTopic);
+          return {
+            recentMessages,
+            currentPollQuestion: details?.question_text || simplifiedTopic,
+            currentPollOptions: JSON.parse(details?.predefined_answers_json || "[]"),
+            previousPollOptions: [],
+          };
+        }
 
         const roomPolls = pollsByRoomAll[roomId] || [];
         let currentPoll = null;
@@ -5388,7 +5420,7 @@ router.get("/monitoring", (req, res) => {
         `
       SELECT id, name, room_type, is_active, timer_expires_at, topic_memory_json, collection_complete
       FROM rooms
-      WHERE room_type IN ('group', 'convergence')
+      WHERE room_type IN ('group', 'convergence', 'plenary')
       ORDER BY id DESC
     `,
       )
@@ -5437,8 +5469,9 @@ router.get("/monitoring", (req, res) => {
         });
 
       const unresolvedTopics = memory
-        .filter((t) => t.status !== "resolved")
+        .filter((t) => t.status !== "resolved" && t.status !== 'discussed')
         .map((t) => {
+          if (room.room_type === 'plenary') return t.topic || t.question;
           const rawTopic = t.suggestion || t.key || t.topic || "";
           return getNormalizedTopic(rawTopic, rawTopic, activeTopics);
         });
@@ -5481,6 +5514,7 @@ router.get("/monitoring", (req, res) => {
         membersCount: humanNicknames.length,
         membersNicknames: humanNicknames,
         resolvedTopics,
+        discussedTopics: memory.filter((item) => item.status === 'discussed').map((item) => item.topic || item.question),
         unresolvedTopics,
         votingAttempts,
       };

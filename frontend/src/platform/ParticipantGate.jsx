@@ -5,6 +5,7 @@ import { participantRunId, platformRequest, sessionKey } from "./client.js";
 import { scheduleStoppedLogout } from "./stoppedLogout.js";
 import { Shell } from "./PlatformPages.jsx";
 import SurveyForm from '../components/SurveyForm.jsx';
+import TopicDescription from '../components/TopicDescription.jsx';
 
 const ParticipantRunContext = createContext(null);
 export const useParticipantRun = () => useContext(ParticipantRunContext);
@@ -153,6 +154,9 @@ export default function ParticipantGate({ children }) {
         </section>
       </Shell>
     );
+  if (state.introduction?.pending)
+    return <Shell><TopicDescription key={state.introduction.pending.version} document={state.introduction.pending} token={token}
+      onContinued={() => setSurveyRefresh((value) => value + 1)} /></Shell>;
   if (state.surveys?.pending)
     return <Shell><SurveyForm key={`${participantRunId}:${user?.id}:${state.surveys.pending.stage}`} survey={state.surveys.pending} token={token} userId={user?.id}
       onSubmitted={() => setSurveyRefresh((value) => value + 1)} /></Shell>;

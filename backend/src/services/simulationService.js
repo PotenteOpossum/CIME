@@ -11,7 +11,8 @@ import {
   recordConvergenceAgreement,
   recordContinuousVoteAudit,
   ensureLiveOption,
-  announceContinuousVoteChange
+  announceContinuousVoteChange,
+  getUnresolvedRoomMemoryTopics
 } from './agent3Service.js';
 import { resolvePersonaProfile, personaPromptBlock, computeVoteDecision } from './simulationAgentModel.js';
 
@@ -329,6 +330,10 @@ async function simulateAgentMessage(io, roomId, userId, text) {
   consumePersonalRoomReplyAction(roomId);
   const roomState = db.prepare('SELECT room_type FROM rooms WHERE id = ?').get(roomId);
   if (roomState?.room_type === 'personal') return;
+  // Simulated messages bypass the socket handler, so schedule the same
+  // mid-discussion intervention check that real participant messages get.
+  const { scheduleInterventionCheck } = await import('./interventionService.js');
+  scheduleInterventionCheck(roomId, io);
 
   // Trigger bot reply if auto-bot is enabled (personal room or group/conv with <=1 active human user)
   const { roomShouldAutoBot, generateAgent1Reply } = await import('./agent1Service.js');
@@ -733,12 +738,14 @@ export async function runSimulationStep(io) {
         if (room.room_type === 'convergence' && isConvergenceReviewLocked(room.id)) {
           await simulateConvergenceReview(io, room, members);
         }
-        const openPolls = db.prepare("SELECT id, question, poll_type, suggestion, mandatory FROM polls WHERE room_id = ? AND is_closed = 0").all(room.id);
+        const openPolls = db.prepare("SELECT id, question, poll_type, suggestion, mandatory, created_at, expires_at FROM polls WHERE room_id = ? AND is_closed = 0").all(room.id);
 
         const memberPromises = members.map(async (member) => {
           const agentConfig = simulationState.personas[member.id];
           if (!agentConfig) return;
           const profile = getProfile(member.id);
+          // A participant who votes in this step does not also write in it.
+          let votedThisStep = false;
 
           // 1. Handle open polls
           for (const poll of openPolls) {
@@ -755,7 +762,16 @@ export async function runSimulationStep(io) {
             const latestHumanMessage = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ? AND sender_id IS NOT NULL').get(room.id)?.id || 0;
             const reconsiderKey = `${cacheKey}-discussion-${latestHumanMessage}`;
             const reconsiderLive = poll.poll_type === 'continuous' && hasVoted && !skippedVotes.has(reconsiderKey);
+            // People take a while to cast their first vote and keep talking meanwhile.
+            // Each participant waits a seeded 15–65% of the poll's duration.
+            if (!hasVoted && poll.created_at && poll.expires_at) {
+              const opened = new Date(poll.created_at).getTime();
+              const duration = new Date(poll.expires_at).getTime() - opened;
+              const waitFraction = 0.15 + 0.5 * simulationRandom('vote-delay', poll.id, member.id);
+              if (duration > 0 && Date.now() - opened < waitFraction * duration) continue;
+            }
             if ((!hasVoted || reconsiderLive) && !skippedVotes.has(cacheKey)) {
+              votedThisStep = true;
               if (poll.poll_type === 'continuous') skippedVotes.add(reconsiderKey);
               if (options.length === 0) continue;
 
@@ -822,7 +838,9 @@ export async function runSimulationStep(io) {
 
           // 2. Participate in discussion. Whether/when to speak is governed by the OCEAN-derived
           // participation gates (p_speak from Extraversion, delay ticks, direct-mention need).
-          if (openPolls.length === 0) {
+          // Polls and chat run in parallel for real participants, so simulated ones may also
+          // keep discussing while a poll is open.
+          if (!votedThisStep) {
             const lastMsg = db.prepare("SELECT id, sender_id, text FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT 1").get(room.id);
             if (lastMsg && lastMsg.sender_id === member.id) return;
 
@@ -855,17 +873,26 @@ export async function runSimulationStep(io) {
             const transcript = recentMessages.reverse().map(m => `${m.username || 'Bot'}: ${m.text}`).join('\n');
             const userRow = db.prepare("SELECT extracted_preferences FROM users WHERE id = ?").get(member.id);
             const pref = userRow?.extracted_preferences || 'consensus';
-            const stance = profile.stanceFor(room.name);
+            const activeTopic = room.room_type === 'group' ? getUnresolvedRoomMemoryTopics(room.id)[0] : null;
+            const topicKey = activeTopic ? (activeTopic.suggestion || activeTopic.key || activeTopic.topic) : room.name;
+            const topicStance = profile.stanceFor(topicKey);
+            const stance = topicStance.position ? topicStance : profile.stanceFor(room.name);
+            const topicLine = activeTopic
+              ? `Current topic: "${topicKey}"${activeTopic.question ? ` (${activeTopic.question})` : ''}. Options so far: ${(activeTopic.options || []).join(' | ') || 'none'}.`
+              : '';
 
             const memoryContext = getAgentMemoryContext(member.id);
             const systemPrompt = [
               `You are ${member.username} debating in a group.`,
               personaPromptBlock(profile),
-              `Your initial preference: ${stance.position || pref}.`,
+              topicLine,
+              `Your initial preference on this topic: ${stance.position || pref}.`,
               `Relevant memories:\n${memoryContext}`,
               'Before speaking, infer the current social state: who seems aligned, what is unresolved, and what contribution would move the room forward.',
               'When you take a position, give a short reason for it instead of a bare preference statement.',
-              'Contribute to the group discussion.',
+              'Respond to what others actually said, by name: answer their arguments, push back when you disagree, or ask a question. Do not just restate your position or repeat decisions that are already settled.',
+              'Change your view only if an argument genuinely addresses your concerns, as your persona would.',
+              'Contribute to the group discussion on the current topic.',
               `STYLE: Keep your message to at most ${gates.wordCap} words; ${gates.wordCap <= 25 ? 'be terse and reserved.' : gates.wordCap >= 80 ? 'be assertive and elaborate, challenge and synthesize.' : 'be clear and to the point.'}`
             ].join('\n');
             const userPrompt = `Recent discussion:\n${transcript}`;

@@ -18,6 +18,7 @@ import {
   normalizeLiveOption
 } from '../services/agent3Service.js';
 import { getDecisionSettings } from '../services/agentConfigService.js';
+import { getSimplifiedSession, advanceSimplifiedCime } from '../services/simplifiedCimeService.js';
 
 // Defensive: make sure the convergence agreement table exists even if the database was last
 // migrated by an older build. This runs whenever the backend loads this module.
@@ -328,13 +329,14 @@ router.get('/', (req, res) => {
       JOIN room_members rm ON rm.room_id = r.id
       WHERE rm.user_id = ?
         AND (
-          r.name = (SELECT username FROM users WHERE id = ?) || '-personal'
+          (? = 0 AND r.name = (SELECT username FROM users WHERE id = ?) || '-personal')
           OR (r.room_type IN ('group', 'convergence') AND r.is_active = 1)
+          OR (r.room_type = 'plenary' AND (r.is_active = 1 OR r.collection_complete = 1))
         )
       ORDER BY r.name ASC
     `
     )
-    .all(req.user.id, req.user.id)
+    .all(req.user.id, getSimplifiedSession() ? 1 : 0, req.user.id)
     .map((r) => ({ ...r, is_active: r.is_active === 1, collection_complete: r.collection_complete === 1 }));
   return res.json({ rooms });
 });
@@ -432,6 +434,14 @@ router.get('/:roomId/status', async (req, res) => {
   const userRow = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(req.user.id);
   const isAdmin = userRow?.is_admin === 1;
   const roomMeta = db.prepare('SELECT room_type FROM rooms WHERE id = ?').get(roomId);
+  if (roomMeta?.room_type === 'plenary') {
+    advanceSimplifiedCime();
+    const session = getSimplifiedSession(roomId);
+    const topic = session.config.deliberationQuestions[session.topic_index];
+    return res.json({ status: { ongoing_topic: session.stage === 'discussing' ? topic.topic : 'Final vote', tie_votes: 0, points_decided: [],
+      discussion_type: 'simplified', topic_number: session.topic_index + 1, topic_count: session.config.deliberationQuestions.length, stage: session.stage, deadline_at: session.deadline_at,
+      options: session.stage === 'discussing' ? topic.predefined_answers.filter((value) => value.trim()) : [] }, warning: false, remaining_seconds: 0 });
+  }
 
   let kicked = false;
   let warning = false;

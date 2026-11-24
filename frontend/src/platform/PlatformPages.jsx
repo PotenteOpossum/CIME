@@ -9,6 +9,7 @@ import {
 } from "./client.js";
 import { createPortal } from "react-dom";
 import LiveRoomMonitoring from "./LiveRoomMonitoring.jsx";
+import TopicDescriptionEditor from '../components/TopicDescriptionEditor.jsx';
 import RecapModal from "../components/RecapModal.jsx";
 import logo from "../img/CIME_LOGO.png";
 import "./platform.css";
@@ -293,6 +294,7 @@ export function DecisionsPage() {
   const [runs, setRuns] = useState([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [discussionType, setDiscussionType] = useState('');
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -315,7 +317,7 @@ export function DecisionsPage() {
     try {
       const data = await platformRequest("/platform/decisions", {
         method: "POST",
-        body: JSON.stringify({ title, description }),
+        body: JSON.stringify({ title, description, discussion_type: discussionType }),
       });
       navigate(`/runs/${data.run.id}`);
     } catch (e) {
@@ -378,6 +380,21 @@ export function DecisionsPage() {
       <Message error={error} info={info} />
       <form className="platform-card" onSubmit={create}>
         <h2>Create a decision</h2>
+        <fieldset className="discussion-type-picker">
+          <legend>First, choose the discussion type</legend>
+          <div>
+            <label className={discussionType === 'full' ? 'selected' : ''}>
+              <input type="radio" name="discussion-type" value="full" checked={discussionType === 'full'} onChange={() => setDiscussionType('full')} />
+              <strong>Full</strong><span>Private interviews, small-group discussions and implementation votes, collective review, and a final vote.</span>
+            </label>
+            <label className={discussionType === 'simplified' ? 'selected' : ''}>
+              <input type="radio" name="discussion-type" value="simplified" checked={discussionType === 'simplified'} onChange={() => setDiscussionType('simplified')} />
+              <strong>Simplified</strong><span>One shared discussion, timed topics with possible outcomes to discuss, and a final vote.</span>
+            </label>
+          </div>
+          <p>Both follow description → pre-survey → CIME → post-survey.</p>
+        </fieldset>
+        {discussionType && <>
         <Field label="Title">
           <input
             required
@@ -398,6 +415,7 @@ export function DecisionsPage() {
         <button disabled={busy}>
           <Icon name="plus" /> {busy ? "Creating…" : "Create decision"}
         </button>
+        </>}
       </form>
       <label className="platform-check">
         <input
@@ -423,6 +441,7 @@ export function DecisionsPage() {
                   "Configure your decision and invite participants."}
               </p>
               <small>
+                {run.discussion_type === 'simplified' ? 'Simplified' : 'Full'} CIME ·{' '}
                 {run.access_mode} access ·{" "}
                 {new Date(run.created_at).toLocaleDateString()}
               </small>
@@ -638,8 +657,8 @@ export function RunPage() {
       const completedRoom = [...rooms]
         .reverse()
         .find(
-          (room) =>
-            room.room_type === "convergence" && room.collection_complete,
+              (room) =>
+            ['convergence', 'plenary'].includes(room.room_type) && room.collection_complete,
         );
       if (!completedRoom)
         throw new Error(
@@ -675,18 +694,20 @@ export function RunPage() {
       </Shell>
     );
   const { run } = data;
+  const simplified = run.discussion_type === 'simplified';
   return (
     <Shell>
       <Link to="/decisions">← My decisions</Link>
       <div className="platform-heading">
         <div>
           <RunStatus run={run} />
+          <span className="platform-badge">{simplified ? 'Simplified' : 'Full'} CIME</span>
           <h1>{run.title}</h1>
           <p>{run.description}</p>
         </div>
         <div className="platform-actions">
           <a className="platform-button secondary" href={platformPath(`/admin/?run=${id}`)}>
-            <Icon name="settings" /> Advanced settings
+            <Icon name="settings" /> {simplified ? 'Simplified settings' : 'Advanced settings'}
           </a>
         </div>
       </div>
@@ -808,11 +829,12 @@ export function RunPage() {
               href={platformPath(`/admin/?run=${id}#/quality`)}
             >
               <Icon name="spark" />
-              Explore quality
+              {simplified ? 'View results & export' : 'Explore quality'}
             </a>
           </div>
         </section>
       )}
+      <TopicDescriptionEditor key={id} runId={id} frozen={frozen || !!run.archived} />
       <section className="platform-card platform-survey-card">
         <div>
           <span className="platform-eyebrow">Participant questionnaires</span>
@@ -849,12 +871,13 @@ export function RunPage() {
               onChange={(e) => patch("decisionContext", e.target.value)}
             />
           </Field>
-          <Field label="Participant introduction">
+          <Field label="CIME opening message">
             <textarea
               value={config.generalDescription || ""}
               onChange={(e) => patch("generalDescription", e.target.value)}
             />
           </Field>
+          <p>This message introduces the CIME discussion. Use the topic description above for information participants should read before the pre-survey.</p>
           <button
             className="secondary"
             disabled={!config.globalQuestion?.trim()}
@@ -862,13 +885,13 @@ export function RunPage() {
           >
             {generating === "description"
               ? "Generating…"
-              : "⚡ AI Generate introduction"}
+              : "⚡ AI Generate opening message"}
           </button>
           <section className="setup-topics-section">
             <div className="setup-section-header">
               <div>
                 <h3>Discussion topics</h3>
-                <p>Focused questions for the participant interviews.</p>
+                <p>{simplified ? 'The AI presents these topics and possible outcomes in this order. Each topic advances when its discussion time ends.' : 'Focused questions for the participant interviews.'}</p>
               </div>
               <button
                 className="secondary setup-small-button"
@@ -909,7 +932,7 @@ export function RunPage() {
             </div>
             <p className="setup-hint">
               AI generation replaces the current topics. Review the suggestions
-              before saving.
+              {simplified ? ' and set a discussion time for each topic before starting.' : ' before saving.'}
             </p>
             <div className="setup-topic-list">
               {(config.deliberationQuestions || []).map((question, i) => (
@@ -981,6 +1004,12 @@ export function RunPage() {
                       />
                     ))}
                   </div>
+                  {simplified && <label className="platform-field">
+                    <span>Discussion time (minutes)</span>
+                    <input aria-label={`Topic ${i + 1} discussion time (minutes)`} type="number" min="0.01" max="1440" step="any"
+                      value={question.durationMinutes ?? ''} placeholder="Enter minutes"
+                      onChange={(event) => patch('deliberationQuestions', config.deliberationQuestions.map((q, j) => j === i ? { ...q, durationMinutes: event.target.value === '' ? '' : Number(event.target.value) } : q))} />
+                  </label>}
                 </article>
               ))}
               {!config.deliberationQuestions?.length && (
@@ -1021,10 +1050,7 @@ export function RunPage() {
             </button>
           </div>
         </fieldset>
-        <p>
-          Grouping, prompts, timing, quorum and advanced settings are available
-          in the process workspace.
-        </p>
+        <p>{simplified ? 'There are no topic ballots or subgroups. After the last topic, the final main-question ballot opens automatically. Use Simplified settings to configure its duration and the facilitator.' : 'Grouping, prompts, timing, quorum and advanced settings are available in the process workspace.'}</p>
       </section>
       <div className="platform-columns platform-participant-columns">
         <section className="platform-card">
@@ -1352,7 +1378,7 @@ export function RunPage() {
           </p>
         </section>
       </div>
-      {run.status === "active" && <LiveRoomMonitoring runId={id} />}
+      {run.status === "active" && <LiveRoomMonitoring runId={id} discussionType={run.discussion_type} />}
     </Shell>
   );
 }

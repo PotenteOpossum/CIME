@@ -7,6 +7,7 @@ import { clusteringPublicReason, describeDecisionSettings, getAgentPrompt, getDe
 import { appendAgentEvent } from './decisionLogService.js';
 import client from './llm.js';
 import { getGroupingSeed } from './decisionWorkService.js';
+import { getSimplifiedSettings } from './simplifiedSettingsService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -322,17 +323,26 @@ export function getDecisionStatus() {
       why: 'It controls phase transitions, poll creation, and closure decisions.'
     }
   ];
+  const discussionType = process.env.CIME_DISCUSSION_TYPE || (process.env.CIME_ENGINE === 'true' ? JSON.parse(db.prepare('SELECT config_json FROM run_metadata WHERE id = 1').get()?.config_json || '{}').discussionType || 'full' : 'full');
+  const simplified = discussionType === 'simplified' ? db.prepare('SELECT stage, topic_index, deadline_at, config_json FROM simplified_cime WHERE id = 1').get() : null;
+  const simplifiedTopics = simplified ? JSON.parse(simplified.config_json).deliberationQuestions : [];
+  const displayedAgents = discussionType === 'simplified' ? [
+    { key: 'facilitator', name: 'AI facilitator', role: 'Shared discussion facilitator', doing: simplified?.stage === 'discussing' ? 'Helping participants discuss the current topic' : 'Waiting for the discussion or final ballot', why: 'It introduces possible outcomes, asks for reasons, and explains different perspectives neutrally.' },
+    { key: 'schedule', name: 'Discussion schedule', role: 'Automatic topic timing', doing: simplified?.stage === 'discussing' ? `Topic ${simplified.topic_index + 1} of ${simplifiedTopics.length}` : simplified?.stage === 'final_vote' ? 'The final main-question ballot is open' : 'Waiting for the discussion', why: 'Topics advance at their deadlines. The final ballot opens after the last topic.' },
+  ] : agentMeta;
   return {
     global_question: state?.global_question || '',
+    discussion_type: discussionType,
+    ...(discussionType === 'simplified' ? { simplified: { stage: simplified?.stage || 'waiting', topicNumber: simplified ? simplified.topic_index + 1 : 0, topicCount: simplifiedTopics.length, topic: simplifiedTopics[simplified?.topic_index]?.topic || null, deadline: simplified?.deadline_at || null } } : {}),
     decision_context: state?.decision_context || '',
     general_description: state?.general_description || '',
     current_phase: state?.current_phase || 'idle',
     discussion_round: state?.discussion_round || 0,
     process_started_at: questions[0]?.created_at || null,
     deliberation_questions: questions,
-    phase1: { completed, total },
-    settings: getDecisionSettings(),
-    agents: agentMeta.map((agent) => ({
+    ...(discussionType === 'full' ? { phase1: { completed, total } } : {}),
+    settings: discussionType === 'simplified' ? getSimplifiedSettings() : getDecisionSettings(),
+    agents: displayedAgents.map((agent) => ({
       ...agent,
       instructions: getAgentInstructions(agent.key),
       events: latestEvents.filter((event) => event.agent_key === agent.key).slice(0, 20)

@@ -3441,6 +3441,10 @@ async function handleTopicTransition(roomId, decisionText) {
 }
 
 export async function resolvePoll(pollId, roomId) {
+  if (db.prepare('SELECT room_type FROM rooms WHERE id = ?').get(roomId)?.room_type === 'plenary') {
+    const { resolveSimplifiedFinalVote } = await import('./simplifiedCimeService.js');
+    return resolveSimplifiedFinalVote(pollId, roomId);
+  }
   const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
   if (!poll || poll.room_id !== roomId || poll.is_closed === 1) return;
   const pollSettings = getDecisionSettings();

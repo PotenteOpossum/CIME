@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { appendSettingUpdate } from './decisionLogService.js';
+import { INTERVENTION_DEFAULTS, normalizeInterventionSettings } from '../../../shared/interventionSettings.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +38,9 @@ const defaultSettings = {
   kick_out_no_voters: 2,
   user_poll_rate_limit: 11,
   user_inactivity_timeout_minutes: 5,
+  intervention_enabled: INTERVENTION_DEFAULTS.enabled,
+  intervention_cooldown_seconds: INTERVENTION_DEFAULTS.cooldownSeconds,
+  intervention_max_per_topic: INTERVENTION_DEFAULTS.maxPerTopic,
   primary_model: '',
   cheap_model: ''
 };
@@ -130,6 +134,14 @@ export function renderTemplate(templateName, values = {}) {
   }).trim();
 }
 
+function interventionSettingsToDecision(settings) {
+  return {
+    intervention_enabled: settings.enabled,
+    intervention_cooldown_seconds: settings.cooldownSeconds,
+    intervention_max_per_topic: settings.maxPerTopic
+  };
+}
+
 export function getDecisionSettings() {
   ensureConfig();
   const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -156,6 +168,11 @@ export function getDecisionSettings() {
     kick_out_no_voters: clampPositiveInt(merged.kick_out_no_voters, 2, 1, 2),
     user_poll_rate_limit: clampPositiveInt(merged.user_poll_rate_limit, 11, 0, 11),
     user_inactivity_timeout_minutes: clampPositiveInt(merged.user_inactivity_timeout_minutes, 5, 3, 15),
+    ...interventionSettingsToDecision(normalizeInterventionSettings({
+      enabled: normalizeBoolean(merged.intervention_enabled, INTERVENTION_DEFAULTS.enabled),
+      cooldownSeconds: merged.intervention_cooldown_seconds,
+      maxPerTopic: merged.intervention_max_per_topic
+    })),
     primary_model: String(merged.primary_model || ''),
     cheap_model: String(merged.cheap_model || '')
   };
@@ -195,6 +212,13 @@ export function updateDecisionSettings(patch) {
   }
   if (patch.user_inactivity_timeout_minutes !== undefined) {
     next.user_inactivity_timeout_minutes = clampPositiveInt(patch.user_inactivity_timeout_minutes, 5, 3, 15);
+  }
+  if (patch.intervention_enabled !== undefined || patch.intervention_cooldown_seconds !== undefined || patch.intervention_max_per_topic !== undefined) {
+    Object.assign(next, interventionSettingsToDecision(normalizeInterventionSettings({
+      enabled: patch.intervention_enabled !== undefined ? normalizeBoolean(patch.intervention_enabled, current.intervention_enabled) : current.intervention_enabled,
+      cooldownSeconds: patch.intervention_cooldown_seconds ?? current.intervention_cooldown_seconds,
+      maxPerTopic: patch.intervention_max_per_topic ?? current.intervention_max_per_topic
+    })));
   }
   if (patch.primary_model !== undefined) next.primary_model = String(patch.primary_model || '');
   if (patch.cheap_model !== undefined) next.cheap_model = String(patch.cheap_model || '');
@@ -257,7 +281,10 @@ export function describeDecisionSettings(settings = getDecisionSettings()) {
     `poll_timer_minutes=${settings.poll_timer_minutes}`,
     `clustering_strategy=${settings.clustering_strategy}`,
     `clustering_min_users_per_room=${settings.clustering_min_users_per_room}`,
-    `clustering_min_rooms=${settings.clustering_min_rooms}`
+    `clustering_min_rooms=${settings.clustering_min_rooms}`,
+    `intervention_enabled=${settings.intervention_enabled ? 'on' : 'off'}`,
+    `intervention_cooldown_seconds=${settings.intervention_cooldown_seconds}`,
+    `intervention_max_per_topic=${settings.intervention_max_per_topic}`
   ].join(', ');
 }
 

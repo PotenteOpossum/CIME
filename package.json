@@ -18,7 +18,12 @@
     "build": "npm --prefix frontend run build && npm --prefix admin-frontend run build",
     "test": "npm --prefix backend test",
     "start": "npm --prefix backend start",
-    "format:check": "prettier --check backend/src/platform backend/src/storage backend/test frontend/src/platform admin-frontend/src/platform"
+    "format:check": "prettier --check backend/src/platform backend/src/storage backend/test frontend/src/platform admin-frontend/src/platform",
+    "server:start": "systemctl --user start cime-db.service cime-platform.service",
+    "server:restart": "systemctl --user restart cime-platform.service",
+    "server:stop": "systemctl --user stop cime-platform.service",
+    "server:status": "systemctl --user status cime-platform.service cime-db.service --no-pager",
+    "server:logs": "journalctl --user -u cime-platform.service -n 100 -f"
   },
   "devDependencies": {
     "prettier": "^3.9.9"

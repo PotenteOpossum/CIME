@@ -21,7 +21,10 @@ const DECISION_SETTING_RULES = {
   clustering_min_users_per_room: { type: 'number', min: 2, max: 50 },
   clustering_min_rooms: { type: 'number', min: 1, max: 50 },
   primary_model: { type: 'string' },
-  cheap_model: { type: 'string' }
+  cheap_model: { type: 'string' },
+  intervention_enabled: { type: 'boolean' },
+  intervention_cooldown_seconds: { type: 'number', min: 30, max: 600 },
+  intervention_max_per_topic: { type: 'number', min: 0, max: 20 }
 };
 
 export const DECISION_SETTING_KEYS = Object.keys(DECISION_SETTING_RULES);

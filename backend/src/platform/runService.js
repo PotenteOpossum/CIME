@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { fail, now, randomToken } from "./security.js";
+import { getDiscussionType, validateDiscussionType, validateSimplifiedTopics } from '../../../shared/discussionSchema.mjs';
 
 export function parseConfig(run) {
   return JSON.parse(run.config_json || "{}");
 }
 export function validateDraft(config) {
+  validateDiscussionType(getDiscussionType(config));
   for (const key of [
     "globalQuestion",
     "decisionContext",
@@ -75,6 +77,7 @@ export function runView(run, publicUrl) {
     started_at: run.started_at,
     archived: !!run.archived,
     config: parseConfig(run),
+    discussion_type: getDiscussionType(parseConfig(run)),
     prolific_api_configured: !!run.prolific_secret,
     invite_url: `${publicUrl}/join/${run.invite_token}`,
   };
@@ -115,6 +118,8 @@ export function runService(store, manager) {
           "This run has already started. Create a new run to repeat it.",
         );
       const config = { ...parseConfig(run), ...body };
+      if (getDiscussionType(config) !== getDiscussionType(parseConfig(run))) throw fail(409, 'The discussion type is fixed when the discussion is created.');
+      if (simulation && getDiscussionType(config) === 'simplified') throw fail(409, 'Start this Simplified discussion with participants from its setup page. The simulation workspace currently supports Full CIME.');
       if (
         !String(config.globalQuestion || "").trim() ||
         !String(config.decisionContext || "").trim() ||
@@ -128,6 +133,7 @@ export function runService(store, manager) {
           "Provide the main question, context and at least one discussion question",
         );
       validateDraft(config);
+      validateSimplifiedTopics(config);
       const state = await manager.call(run, "/state");
       if (simulation && state.participants.length)
         throw fail(
@@ -162,6 +168,11 @@ export function runService(store, manager) {
           },
         });
         if (!simulation) {
+          const introduction = await manager.call(run, '/introduction/preflight');
+          if (introduction.pending.length) {
+            await manager.call(run, '/admission', { method: 'POST', body: { open: !!run.admission_open, mode: run.access_mode, limit: run.participant_limit } });
+            throw fail(409, `${introduction.pending.length} participant(s) still need to read the topic description and continue.`);
+          }
           const { pending } = await manager.call(run, '/surveys/preflight');
           if (pending.length) {
             await manager.call(run, '/admission', { method: 'POST', body: { open: !!run.admission_open, mode: run.access_mode, limit: run.participant_limit } });
