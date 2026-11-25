@@ -390,6 +390,24 @@ export async function generateSimplifiedReply({ roomId, triggerText, allowDuring
   const result = db.prepare('INSERT INTO messages(room_id, sender_id, text, timestamp, is_facilitation) VALUES (?, NULL, ?, ?, 1)').run(roomId, text, timestamp);
   return { id: Number(result.lastInsertRowid), room_id: roomId, sender_id: null, sender_name: 'Bot', is_bot: true, text, timestamp };
 }
+// Development-only shortcut used by the Test Lab: end the current topic (or
+// the final vote) now instead of waiting for its saved deadline.
+export function skipSimplifiedStep(now = Date.now()) {
+  const session = getSimplifiedSession();
+  if (!session || session.stage === "completed" || !liveSession(session))
+    return { skipped: false, stage: session?.stage || "waiting" };
+  db.prepare("UPDATE simplified_cime SET deadline_at = ? WHERE id = 1").run(
+    iso(now - 1),
+  );
+  // The final vote closes on its poll's own deadline.
+  if (session.stage === "final_vote" && session.final_poll_id)
+    db.prepare("UPDATE polls SET expires_at = ? WHERE id = ? AND is_closed = 0").run(
+      iso(now - 1),
+      session.final_poll_id,
+    );
+  advanceSimplifiedCime(now);
+  return { skipped: true, stage: getSimplifiedSession()?.stage || "waiting" };
+}
 export function initSimplifiedCime(io) {
   ioRef = io;
   if (watchdog) return;

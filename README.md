@@ -82,6 +82,12 @@ Both types use the same participant pipeline: **topic description → pre-survey
 
 Access mode and identity-verification settings lock after the first participant joins. Started runs retain their configuration. Session revocation disconnects a participant; it does not ban their identity from reconnecting. A rotated invitation invalidates the previous URL and QR code.
 
+## Test Lab (local development only)
+
+To try Full or Simplified CIME with several participants on one screen, run `npm run dev` and open **http://localhost:5173/test-lab** in Chrome. Sign in with a local administrator account, choose the discussion type, scenario, number of participants and topics, and click **Create test**. The Test Lab creates the run, joins the participants (Anna, Ben, Carla, …) and shows each one in its own live tile. Each tile runs on its own address (`p1.localhost`, `p2.localhost`, …), so the participants stay logged in separately. Type in a tile to act as that participant, or press **Open in tab** to give one participant a full browser tab.
+
+The side panel starts the discussion and offers shortcuts: send a message as any participant (repeat it to simulate a dominant speaker), make everyone vote (random, same option, or split), close open votes now (Full) or move to the next topic now (Simplified), and restart with the same settings. It also shows the rooms, the Simplified topic and countdown, and every AI intervention check with its outcome and reason. Full CIME tests use short timers and rooms of at least two people. Test runs have no topic description or surveys. Restarting stops the previous test run. The Test Lab and its skip shortcut are not available in production builds.
+
 ## Experiment surveys
 
 Before configuring the questionnaires, use **Topic description** on the experiment setup page to create the page participants read first. Enable it, give it a title, and add headings, text, bullet or numbered lists, and uploaded images. Content blocks can be reordered or removed. Images have editable descriptions for screen readers, captions, and width settings. Use **Participant preview** to review the page, then **Save topic description** to publish the draft to this run.

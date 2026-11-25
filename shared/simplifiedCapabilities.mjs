@@ -13,7 +13,7 @@ export function simplifiedAdminRequestAllowed(method, path) {
   if (["GET", "HEAD"].includes(method))
     return [
       /^\/admin\/simplified\/(settings|overview|logs)$/,
-      /^\/admin\/(surveys(?:\/export)?|introduction|monitoring|rooms)$/,
+      /^\/admin\/(surveys(?:\/export)?|introduction|monitoring|rooms|interventions)$/,
       /^\/admin\/decision-process(?:\/export)?$/,
     ].some((pattern) => pattern.test(route));
   if (method === "PUT")
@@ -28,6 +28,7 @@ export function simplifiedAdminRequestAllowed(method, path) {
       "/admin/decision-process/interrupt",
       "/admin/decision-process/generate-questions",
       "/admin/decision-process/generate-description",
+      "/admin/simplified/skip",
     ].includes(route);
   return false;
 }

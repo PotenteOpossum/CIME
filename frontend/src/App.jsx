@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import LoginPage from "./pages/LoginPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
@@ -16,6 +17,10 @@ import {
 import { participantRunId, routePath } from "./platform/client.js";
 import ParticipantGate from "./platform/ParticipantGate.jsx";
 
+// Development-only Test Lab (see src/testlab). Not included in production builds.
+const TestLab = import.meta.env.DEV ? lazy(() => import("./testlab/TestLab.jsx")) : null;
+const TestLabTile = import.meta.env.DEV ? lazy(() => import("./testlab/TestLabTile.jsx")) : null;
+
 function ProtectedRoute({ children }) {
   const { token } = useAuth();
   if (!token) return <Navigate to="/login" replace />;
@@ -25,6 +30,10 @@ function ProtectedRoute({ children }) {
 export default function App() {
   const { token } = useAuth();
 
+  if (TestLab && /^\/test-lab\/?$/.test(routePath))
+    return <Suspense fallback={null}><TestLab /></Suspense>;
+  if (TestLabTile && /^\/test-lab\/tile\/?$/.test(routePath))
+    return <Suspense fallback={null}><TestLabTile /></Suspense>;
   const invitation = routePath.match(
     /^\/join\/([a-zA-Z0-9_-]+)\/?$/,
   )?.[1];

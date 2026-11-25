@@ -5564,6 +5564,19 @@ router.post("/rooms/:roomId/showdown", async (req, res) => {
   }
 });
 
+router.get("/interventions", (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.room_id, r.name AS room_name, d.discussion_type, d.topic, d.decided_at,
+              d.intervene, d.move, d.reason, d.outcome, d.message_id
+       FROM intervention_decisions d LEFT JOIN rooms r ON r.id = d.room_id
+       ORDER BY d.id DESC LIMIT ?`,
+    )
+    .all(limit);
+  res.json({ decisions: rows });
+});
+
 router.get("/llm-logs", (req, res) => {
   try {
     const limit = Number(req.query.limit) || 100;

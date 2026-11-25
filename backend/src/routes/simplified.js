@@ -10,6 +10,7 @@ import {
 import {
   getSimplifiedSession,
   advanceSimplifiedCime,
+  skipSimplifiedStep,
 } from "../services/simplifiedCimeService.js";
 
 export const simplifiedAdminRoutes = createRouter();
@@ -64,6 +65,11 @@ simplifiedAdminRoutes.get("/overview", (_req, res) => {
     deadline: session?.deadline_at || null,
     roomId: session?.room_id || null,
   });
+});
+simplifiedAdminRoutes.post("/skip", (_req, res) => {
+  if (process.env.NODE_ENV === "production")
+    return res.status(404).json({ error: "Endpoint not found" });
+  res.json(skipSimplifiedStep());
 });
 simplifiedAdminRoutes.get("/logs", (_req, res) =>
   res.json({

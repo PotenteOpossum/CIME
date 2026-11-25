@@ -1,0 +1,133 @@
+:root {
+  --tl-bg: #f4f5f7;
+  --tl-card: #ffffff;
+  --tl-text: #1d2330;
+  --tl-muted: #687083;
+  --tl-line: #dfe2e8;
+  --tl-accent: #2f5bd3;
+  --tl-danger: #b3261e;
+  --tl-posted: #e6f4ea;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tl-bg: #15171c;
+    --tl-card: #1f232b;
+    --tl-text: #e7e9ee;
+    --tl-muted: #9aa1b0;
+    --tl-line: #323846;
+    --tl-accent: #7ea2ff;
+    --tl-danger: #ff8a80;
+    --tl-posted: #1f3a29;
+  }
+}
+.tl-page {
+  min-height: 100vh;
+  background: var(--tl-bg);
+  color: var(--tl-text);
+  font: 14px/1.4 system-ui, -apple-system, sans-serif;
+}
+.tl-page button,
+.tl-page select,
+.tl-page input,
+.tl-page textarea,
+.tl-button {
+  font: inherit;
+  color: inherit;
+  background: var(--tl-card);
+  border: 1px solid var(--tl-line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.tl-page input,
+.tl-page textarea { cursor: text; }
+.tl-page button:disabled { opacity: 0.5; cursor: default; }
+.tl-primary { background: var(--tl-accent) !important; color: #fff !important; border-color: var(--tl-accent) !important; }
+.tl-danger { color: var(--tl-danger) !important; }
+.tl-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--tl-card);
+  border-bottom: 1px solid var(--tl-line);
+}
+.tl-spacer { flex: 1; }
+.tl-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--tl-line);
+  color: var(--tl-muted);
+  font-size: 12px;
+}
+.tl-inline { display: inline-flex; gap: 6px; align-items: center; }
+.tl-inline input[type="number"] { width: 56px; }
+.tl-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  padding: 12px 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .tl-main { grid-template-columns: minmax(0, 1fr); }
+}
+.tl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+.tl-card {
+  background: var(--tl-card);
+  border: 1px solid var(--tl-line);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tl-card h1, .tl-card h2, .tl-card h3 { margin: 0; }
+.tl-card h3 { font-size: 14px; }
+.tl-card p { margin: 0; }
+.tl-card label { display: flex; flex-direction: column; gap: 4px; }
+.tl-login { max-width: 360px; margin: 10vh auto; }
+.tl-setup { grid-column: 1 / -1; max-width: 520px; }
+.tl-segment { display: flex; gap: 6px; }
+.tl-segment button.on { border-color: var(--tl-accent); color: var(--tl-accent); font-weight: 600; }
+.tl-row { display: flex; gap: 6px; align-items: center; }
+.tl-row select { flex: 1; min-width: 0; }
+.tl-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 56px; max-height: calc(100vh - 68px); overflow: auto; }
+.tl-tile {
+  background: var(--tl-card);
+  border: 1px solid var(--tl-line);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.tl-tile.expanded { grid-column: 1 / -1; }
+.tl-tile.expanded iframe { height: calc(var(--tile-h) * 1.5); }
+.tl-tile-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--tl-line);
+}
+.tl-tile-head span { display: flex; gap: 6px; align-items: center; }
+.tl-tile-head a { color: var(--tl-accent); font-size: 12px; }
+.tl-tile-head button { padding: 2px 8px; font-size: 12px; }
+.tl-tile iframe { width: 100%; height: var(--tile-h); border: 0; background: #fff; }
+.tl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tl-decision { padding: 6px; border-radius: 6px; border: 1px solid var(--tl-line); }
+.tl-decision.posted { background: var(--tl-posted); }
+.tl-log li { font-family: ui-monospace, monospace; font-size: 12px; }
+.tl-muted { color: var(--tl-muted); font-size: 12px; }
+.tl-error { color: var(--tl-danger); }
+.tl-banner { margin: 8px 16px 0; }

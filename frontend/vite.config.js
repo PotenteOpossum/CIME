@@ -11,6 +11,8 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: 5173,
       strictPort: true,
+      // Test Lab tiles run on p1.localhost, p2.localhost, … (development only).
+      allowedHosts: [".localhost"],
       proxy: {
         "/api": "http://127.0.0.1:4000",
         "/socket.io": { target: "http://127.0.0.1:4000", ws: true },
